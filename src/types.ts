@@ -91,6 +91,8 @@ export interface ActivityEvent {
 
 export interface LivePaintEvent {
   type: "paint";
+  /** Color of the batch's first pixel (feed icon). */
+  color: string;
   painter: string;
   pixelCount: number;
   totalPaid: string;
