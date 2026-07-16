@@ -16,6 +16,9 @@
     "pixelwar": "./dist/cli.js"
   },
   "files": ["dist"],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",

@@ -3,6 +3,7 @@ import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import {
   PaymentRejectedError,
   PriceChangedError,
+  SpendLimitError,
   type ActivityEvent,
   type CanvasMeta,
   type Leaderboard,
@@ -114,20 +115,39 @@ export class PixelWarClient {
    * Paint pixels through the full x402 flow:
    * request → 402 challenge → sign payment → retry with X-PAYMENT.
    * Retries on price changes up to maxRepriceRetries times.
+   *
+   * `maxTotal` (atomic USDC) is a hard spend ceiling: the client never signs
+   * a challenge above it, including reprice retries where prices may have
+   * doubled since your quote. Always pass it when the amount matters.
+   *
+   * The Idempotency-Key is stable for the whole call (including reprice
+   * retries), so a response lost to the network can be retried by calling
+   * paint() again with the same key via `idempotencyKey` — the server
+   * replays the original result instead of charging twice.
    */
-  async paint(pixels: PixelPaint[]): Promise<PaintResult> {
+  async paint(
+    pixels: PixelPaint[],
+    opts: { maxTotal?: bigint | string; idempotencyKey?: string } = {},
+  ): Promise<PaintResult> {
+    const ceiling = opts.maxTotal !== undefined ? BigInt(opts.maxTotal) : null;
+    const idempotencyKey = opts.idempotencyKey ?? randomUUID();
     let attempt = 0;
     for (;;) {
       const challenge = await this.paintChallenge(pixels);
       const req = challenge.accepts[0];
       if (!req) throw new Error("server returned no payment requirements");
 
+      const required = BigInt(req.maxAmountRequired);
+      if (ceiling !== null && required > ceiling) {
+        throw new SpendLimitError(required, ceiling);
+      }
+
       const header = (await this.isMock())
         ? this.buildMockPayment(req)
         : await this.signPayment(req);
 
       try {
-        return await this.paintWithPayment(pixels, header);
+        return await this.paintWithPayment(pixels, header, idempotencyKey);
       } catch (err) {
         if (err instanceof PriceChangedError && attempt < this.maxRepriceRetries) {
           attempt++;
@@ -153,19 +173,31 @@ export class PixelWarClient {
   private async paintWithPayment(
     pixels: PixelPaint[],
     paymentHeader: string,
+    idempotencyKey: string,
   ): Promise<PaintResult> {
     const res = await fetch(`${this.baseUrl}/v1/paint`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-payment": paymentHeader,
-        "idempotency-key": randomUUID(),
+        "idempotency-key": idempotencyKey,
       },
       body: JSON.stringify({ pixels }),
     });
-    const body = (await res.json()) as PaintResult & PaymentRequired & { message?: string };
+    // Never let a non-JSON error body (LB error page) mask the real status —
+    // especially after the payment header has been submitted.
+    let body: PaintResult & PaymentRequired & { message?: string; code?: string };
+    try {
+      body = (await res.json()) as typeof body;
+    } catch {
+      throw new Error(
+        `paint response unreadable (HTTP ${res.status}) — payment outcome uncertain, retry with the same idempotencyKey ("${idempotencyKey}")`,
+      );
+    }
     if (res.status === 402) {
-      if (body.error?.startsWith("quote expired")) throw new PriceChangedError(body);
+      if (body.code === "quote_expired" || body.error?.startsWith("quote expired")) {
+        throw new PriceChangedError(body);
+      }
       throw new PaymentRejectedError(body);
     }
     if (!res.ok) throw new Error(body.message ?? `paint failed: ${res.status}`);
@@ -233,7 +265,7 @@ export class PixelWarClient {
   private buildMockPayment(req: PaymentRequirements): string {
     const from = this.account?.address ?? "0xA9E0770001111111111111111111111111111111";
     const now = Math.floor(Date.now() / 1000);
-    const nonce = `0x${Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex")}`;
+    const nonce = `0x${Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex")}`;
     return this.encodeHeader("0xmock", {
       from,
       to: req.payTo,
@@ -275,6 +307,12 @@ export class PixelWarClient {
       typeof WebSocket !== "undefined" ? WebSocket : (await import("ws")).default;
     const ws = new WebSocketImpl(wsUrl) as WebSocket;
     ws.binaryType = "arraybuffer";
+    let closed = false;
+    const notifyClose = () => {
+      if (closed) return;
+      closed = true;
+      handlers.onClose?.();
+    };
     ws.onmessage = (e: MessageEvent) => {
       if (e.data instanceof ArrayBuffer) {
         handlers.onDelta?.(new Uint8Array(e.data));
@@ -285,7 +323,10 @@ export class PixelWarClient {
         } catch { /* ignore */ }
       }
     };
-    ws.onclose = () => handlers.onClose?.();
+    // Without an error handler, the ws package (Node <22 fallback) raises an
+    // unhandled 'error' event and crashes the process on ECONNREFUSED.
+    ws.onerror = () => notifyClose();
+    ws.onclose = () => notifyClose();
     return () => ws.close();
   }
 }

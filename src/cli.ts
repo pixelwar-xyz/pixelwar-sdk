@@ -38,14 +38,27 @@ env:
 example:
   pixelwar paint 500,500,#ff0044 501,500,#ff0044`;
 
+function parseCoord(value: string | undefined, name: string): number {
+  const n = Number(value);
+  if (value === undefined || !Number.isInteger(n) || n < 0) {
+    console.error(`invalid ${name}: "${value ?? ""}" (expected a non-negative integer)`);
+    process.exit(1);
+  }
+  return n;
+}
+
 function parsePixels(specs: string[]) {
+  if (specs.length === 0) {
+    console.error("no pixels given (expected x,y,#rrggbb …)");
+    process.exit(1);
+  }
   return specs.map((spec) => {
     const [x, y, color] = spec.split(",");
-    if (!x || !y || !color || !/^#[0-9a-fA-F]{6}$/.test(color)) {
+    if (!color || !/^#[0-9a-fA-F]{6}$/.test(color)) {
       console.error(`bad pixel spec: "${spec}" (expected x,y,#rrggbb)`);
       process.exit(1);
     }
-    return { x: Number(x), y: Number(y), color };
+    return { x: parseCoord(x, "x"), y: parseCoord(y, "y"), color };
   });
 }
 
@@ -57,10 +70,10 @@ try {
       json(await client.meta());
       break;
     case "pixel":
-      json(await client.pixel(Number(args[1]), Number(args[2])));
+      json(await client.pixel(parseCoord(args[1], "x"), parseCoord(args[2], "y")));
       break;
     case "history":
-      json(await client.history(Number(args[1]), Number(args[2])));
+      json(await client.history(parseCoord(args[1], "x"), parseCoord(args[2], "y")));
       break;
     case "quote": {
       const q = await client.quote(parsePixels(args.slice(1)));
@@ -71,7 +84,9 @@ try {
       const pixels = parsePixels(args.slice(1));
       const quote = await client.quote(pixels);
       console.error(`painting ${pixels.length}px for ${quote.totalUsdc} USDC…`);
-      const result = await client.paint(pixels);
+      // The quote IS the spend ceiling: if prices move before payment, the
+      // SDK refuses to sign a higher amount instead of silently paying more.
+      const result = await client.paint(pixels, { maxTotal: quote.total });
       json(result);
       break;
     }

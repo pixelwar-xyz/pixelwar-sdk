@@ -111,6 +111,18 @@ export class PriceChangedError extends Error {
   }
 }
 
+export class SpendLimitError extends Error {
+  constructor(
+    public readonly required: bigint,
+    public readonly limit: bigint,
+  ) {
+    super(
+      `payment of ${required} atomic USDC exceeds the configured limit of ${limit} — refusing to sign`,
+    );
+    this.name = "SpendLimitError";
+  }
+}
+
 export class PaymentRejectedError extends Error {
   constructor(public readonly response: PaymentRequired) {
     super(`payment rejected: ${response.error}`);
