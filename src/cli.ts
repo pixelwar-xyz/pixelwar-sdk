@@ -39,12 +39,13 @@ example:
   pixelwar paint 500,500,#ff0044 501,500,#ff0044`;
 
 function parseCoord(value: string | undefined, name: string): number {
-  const n = Number(value);
-  if (value === undefined || !Number.isInteger(n) || n < 0) {
+  // Strict digits only: Number("") is 0, Number("0x10")/"1e3" parse — all
+  // of which would silently paint (and pay for) the wrong pixel.
+  if (value === undefined || !/^\d+$/.test(value)) {
     console.error(`invalid ${name}: "${value ?? ""}" (expected a non-negative integer)`);
     process.exit(1);
   }
-  return n;
+  return Number(value);
 }
 
 function parsePixels(specs: string[]) {
@@ -98,12 +99,20 @@ try {
       break;
     case "watch": {
       console.error("watching live paints (ctrl-c to stop)…");
+      let failed = false;
       await client.live({
         onPaint: (e) =>
           console.log(
             `${e.at} ${e.painter} painted ${e.pixelCount}px for ${e.totalPaidUsdc} USDC${e.txHash ? ` tx=${e.txHash}` : ""}`,
           ),
-        onClose: () => process.exit(0),
+        onError: (msg) => {
+          failed = true;
+          console.error(`connection error: ${msg}`);
+        },
+        onClose: () => {
+          console.error("connection closed");
+          process.exit(failed ? 1 : 0);
+        },
       });
       await new Promise(() => {});
       break;

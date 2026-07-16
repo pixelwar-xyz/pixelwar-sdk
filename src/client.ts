@@ -129,8 +129,27 @@ export class PixelWarClient {
     pixels: PixelPaint[],
     opts: { maxTotal?: bigint | string; idempotencyKey?: string } = {},
   ): Promise<PaintResult> {
-    const ceiling = opts.maxTotal !== undefined ? BigInt(opts.maxTotal) : null;
+    let ceiling: bigint | null = null;
+    if (opts.maxTotal !== undefined) {
+      try {
+        ceiling = BigInt(opts.maxTotal);
+      } catch {
+        throw new Error(
+          `maxTotal must be ATOMIC USDC (integer, e.g. quote.total = "10000"); got "${opts.maxTotal}" — a decimal like quote.totalUsdc will not work`,
+        );
+      }
+    }
     const idempotencyKey = opts.idempotencyKey ?? randomUUID();
+
+    // Recovery path: with an explicitly supplied key, first check whether the
+    // server already executed this paint (a previous response may have been
+    // lost). This never builds a payment, so it works even when prices have
+    // since doubled past the spend ceiling.
+    if (opts.idempotencyKey && this.account) {
+      const replayed = await this.fetchReplay(opts.idempotencyKey, this.account.address);
+      if (replayed) return replayed;
+    }
+
     let attempt = 0;
     for (;;) {
       const challenge = await this.paintChallenge(pixels);
@@ -156,6 +175,17 @@ export class PixelWarClient {
         throw err;
       }
     }
+  }
+
+  /** Look up the stored result of a previous paint by Idempotency-Key. */
+  private async fetchReplay(key: string, payer: string): Promise<PaintResult | null> {
+    try {
+      const res = await fetch(
+        `${this.baseUrl}/v1/paints/replay?key=${encodeURIComponent(key)}&payer=${payer}`,
+      );
+      if (res.status === 200) return (await res.json()) as PaintResult;
+    } catch { /* endpoint unavailable — fall through to the normal flow */ }
+    return null;
   }
 
   private async paintChallenge(pixels: PixelPaint[]): Promise<PaymentRequired> {
@@ -195,12 +225,22 @@ export class PixelWarClient {
       );
     }
     if (res.status === 402) {
-      if (body.code === "quote_expired" || body.error?.startsWith("quote expired")) {
+      if (
+        body.code === "quote_expired" ||
+        (typeof body.error === "string" && body.error.startsWith("quote expired"))
+      ) {
         throw new PriceChangedError(body);
       }
       throw new PaymentRejectedError(body);
     }
-    if (!res.ok) throw new Error(body.message ?? `paint failed: ${res.status}`);
+    if (!res.ok) {
+      if (body.error === "idempotency_conflict") {
+        throw new Error(
+          `idempotency key "${idempotencyKey}" was already used with a DIFFERENT batch — reuse a key only for retries of the exact same pixels`,
+        );
+      }
+      throw new Error(body.message ?? body.error ?? `paint failed: ${res.status}`);
+    }
     return body;
   }
 
@@ -301,6 +341,8 @@ export class PixelWarClient {
     onPaint?: (event: LivePaintEvent) => void;
     onDelta?: (bytes: Uint8Array) => void;
     onClose?: () => void;
+    /** Connection-level failure (refused, dropped). Fires before onClose. */
+    onError?: (message: string) => void;
   }): Promise<() => void> {
     const wsUrl = this.baseUrl.replace(/^http/, "ws") + "/v1/live";
     const WebSocketImpl =
@@ -325,7 +367,10 @@ export class PixelWarClient {
     };
     // Without an error handler, the ws package (Node <22 fallback) raises an
     // unhandled 'error' event and crashes the process on ECONNREFUSED.
-    ws.onerror = () => notifyClose();
+    ws.onerror = (evt: Event & { message?: string; error?: Error }) => {
+      handlers.onError?.(evt.message ?? evt.error?.message ?? "websocket error");
+      notifyClose();
+    };
     ws.onclose = () => notifyClose();
     return () => ws.close();
   }

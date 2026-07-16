@@ -105,7 +105,7 @@ export interface LivePaintEvent {
 export class PriceChangedError extends Error {
   constructor(public readonly freshQuote: PaymentRequired) {
     super(
-      `pixel prices changed since quote: new total ${freshQuote.quote.totalUsdc} USDC`,
+      `pixel prices changed since quote: new total ${freshQuote?.quote?.totalUsdc ?? "?"} USDC`,
     );
     this.name = "PriceChangedError";
   }
