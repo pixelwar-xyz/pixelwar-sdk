@@ -22,6 +22,9 @@ const CHAIN_IDS: Record<string, number> = {
   base: 8453,
 };
 
+/** Deterministic payer used for mock-mode payments when no key is configured. */
+const MOCK_FALLBACK_PAYER = "0xA9E0770001111111111111111111111111111111";
+
 export interface PixelWarClientOptions {
   /** API base URL, e.g. https://api.pixelwar.xyz */
   baseUrl?: string;
@@ -144,10 +147,14 @@ export class PixelWarClient {
     // Recovery path: with an explicitly supplied key, first check whether the
     // server already executed this paint (a previous response may have been
     // lost). This never builds a payment, so it works even when prices have
-    // since doubled past the spend ceiling.
-    if (opts.idempotencyKey && this.account) {
-      const replayed = await this.fetchReplay(opts.idempotencyKey, this.account.address);
-      if (replayed) return replayed;
+    // since doubled past the spend ceiling. Works in mock mode too — the
+    // server keys records by the payer we'd pay as.
+    if (opts.idempotencyKey) {
+      const payerForReplay = this.account?.address ?? (this.mock ? MOCK_FALLBACK_PAYER : null);
+      if (payerForReplay) {
+        const replayed = await this.fetchReplay(opts.idempotencyKey, payerForReplay);
+        if (replayed) return replayed;
+      }
     }
 
     let attempt = 0;
@@ -303,7 +310,7 @@ export class PixelWarClient {
   }
 
   private buildMockPayment(req: PaymentRequirements): string {
-    const from = this.account?.address ?? "0xA9E0770001111111111111111111111111111111";
+    const from = this.account?.address ?? MOCK_FALLBACK_PAYER;
     const now = Math.floor(Date.now() / 1000);
     const nonce = `0x${Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex")}`;
     return this.encodeHeader("0xmock", {
