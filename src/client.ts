@@ -28,6 +28,10 @@ import {
 const CHAIN_IDS: Record<string, number> = {
   "base-sepolia": 84532,
   base: 8453,
+  "arbitrum-sepolia": 421614,
+  arbitrum: 42161,
+  "polygon-amoy": 80002,
+  polygon: 137,
 };
 
 /** Deterministic payer used for mock-mode payments when no key is configured. */
@@ -64,6 +68,10 @@ export interface PixelWarClientOptions {
 const DEFAULT_RPC: Record<string, string> = {
   "base-sepolia": "https://sepolia.base.org",
   base: "https://mainnet.base.org",
+  "arbitrum-sepolia": "https://sepolia-rollup.arbitrum.io/rpc",
+  arbitrum: "https://arb1.arbitrum.io/rpc",
+  "polygon-amoy": "https://rpc-amoy.polygon.technology",
+  polygon: "https://polygon-rpc.com",
 };
 
 export class PixelWarClient {
@@ -214,7 +222,7 @@ export class PixelWarClient {
    */
   async paint(
     pixels: PixelPaint[],
-    opts: { maxTotal?: bigint | string; idempotencyKey?: string } = {},
+    opts: { maxTotal?: bigint | string; idempotencyKey?: string; network?: string } = {},
   ): Promise<PaintResult> {
     let ceiling: bigint | null = null;
     if (opts.maxTotal !== undefined) {
@@ -245,8 +253,19 @@ export class PixelWarClient {
     let settleAttempt = 0;
     for (;;) {
       const challenge = await this.paintChallenge(pixels);
-      const req = challenge.accepts[0];
-      if (!req) throw new Error("server returned no payment requirements");
+      // Pick the requested chain from the 402's accepts list, else the first
+      // (server lists them in priority order, primary first).
+      const req = opts.network
+        ? challenge.accepts.find((a) => a.network === opts.network)
+        : challenge.accepts[0];
+      if (!req) {
+        const offered = challenge.accepts.map((a) => a.network).join(", ");
+        throw new Error(
+          opts.network
+            ? `network "${opts.network}" not offered by the server (accepts: ${offered})`
+            : "server returned no payment requirements",
+        );
+      }
 
       const required = BigInt(req.maxAmountRequired);
       if (ceiling !== null && required > ceiling) {

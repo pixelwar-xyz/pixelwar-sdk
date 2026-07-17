@@ -33,7 +33,7 @@ usage:
   pixelwar history [--type paint] [--after N] [--wallet 0x…] [--limit N]
                                          platform event log (cursor-paginated)
   pixelwar quote <x,y,#color> [...]      price a batch without paying
-  pixelwar paint <x,y,#color> [...] [--dry-run]
+  pixelwar paint <x,y,#color> [...] [--dry-run] [--network <chain>]
                                          paint pixels (x402 paid!)
   pixelwar paint --file <specs.txt> [--batch N] [--journal J] [--dry-run]
                                          paint a whole spec file in journaled batches
@@ -427,7 +427,12 @@ try {
       // SDK refuses to sign a higher amount instead of silently paying more.
       let result;
       try {
-        result = await client.paint(pixels, { maxTotal: quote.total, idempotencyKey: key });
+        result = await client.paint(pixels, {
+          maxTotal: quote.total,
+          idempotencyKey: key,
+          // Optional: pay on a specific chain (else the server's primary).
+          ...(flags.network ? { network: flags.network } : {}),
+        });
       } catch (err) {
         if (err instanceof DoNotRepayError) {
           console.error(`\nSTOP: ${err.message}`);
