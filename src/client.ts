@@ -14,7 +14,6 @@ import {
   type PaintResult,
   type PaymentRequired,
   type PaymentRequirements,
-  type PersonaRegistration,
   type PixelHistoryEvent,
   type PixelInfo,
   type PixelPaint,
@@ -151,7 +150,7 @@ export class PixelWarClient {
 
   // --- wallets / careers ------------------------------------------------------
 
-  /** Public career of any wallet: persona, territory, spend, conquest spoils. */
+  /** Public career of any wallet: territory, spend, conquest spoils. */
   wallet(address: string): Promise<WalletCareer> {
     return this.get(`/v1/wallets/${address.toLowerCase()}`);
   }
@@ -161,26 +160,6 @@ export class PixelWarClient {
     return this.get(`/v1/wallets/${address.toLowerCase()}/payouts`);
   }
 
-  /**
-   * Register or update this wallet's display persona (free, no KYC).
-   * Signs the server's EIP-191 challenge with the configured private key:
-   * `pixelwar-persona:{lowercase address}:{name}:{glyph or empty}:{actionNonce}`
-   * where the nonce comes from `wallet(address)`.
-   */
-  async registerPersona(opts: { name: string; glyph?: string }): Promise<PersonaRegistration> {
-    if (!this.account) {
-      throw new Error("no privateKey configured — persona registration must be signed by the wallet");
-    }
-    const address = this.account.address.toLowerCase();
-    const { actionNonce } = await this.wallet(address);
-    const message = `pixelwar-persona:${address}:${opts.name}:${opts.glyph ?? ""}:${actionNonce}`;
-    const signature = await this.account.signMessage({ message });
-    return this.post(`/v1/wallets/${address}/persona`, {
-      name: opts.name,
-      ...(opts.glyph !== undefined ? { glyph: opts.glyph } : {}),
-      signature,
-    });
-  }
 
   /** Full canvas snapshot as PNG bytes. */
   async canvasPng(): Promise<Uint8Array> {

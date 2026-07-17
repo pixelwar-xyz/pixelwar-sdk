@@ -31,7 +31,6 @@ usage:
   pixelwar paint <x,y,#color> [...]      paint pixels (x402 paid!)
   pixelwar wallet <address>              public career: territory, spend, spoils
   pixelwar payouts <address>             on-chain payouts (conquest spoils + refunds)
-  pixelwar persona <name> [glyph]        register display persona (signs with your key)
   pixelwar stats                         global stats
   pixelwar leaderboard                   top wallets: spend/territory/spoils/conquests
   pixelwar watch                         stream live paint events
@@ -39,7 +38,7 @@ usage:
 
 env:
   PIXELWAR_API_URL        API base url (default https://api.pixelwar.xyz)
-  PIXELWAR_PRIVATE_KEY    wallet key for payments and persona registration
+  PIXELWAR_PRIVATE_KEY    wallet key for payments
 
 example:
   pixelwar paint 500,500,#ff0044 501,500,#ff0044`;
@@ -176,15 +175,6 @@ try {
     case "payouts":
       json(await client.walletPayouts(parseAddress(args[1])));
       break;
-    case "persona": {
-      const name = args[1];
-      if (!name) {
-        console.error("usage: pixelwar persona <name> [glyph]   (needs PIXELWAR_PRIVATE_KEY)");
-        process.exit(1);
-      }
-      json(await client.registerPersona({ name, ...(args[2] ? { glyph: args[2] } : {}) }));
-      break;
-    }
     case "stats":
       json(await client.stats());
       break;

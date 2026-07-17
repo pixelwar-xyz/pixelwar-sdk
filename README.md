@@ -39,13 +39,11 @@ for (const p of result.pixels) {
 }
 
 // Careers, payouts, the public event log
-const career = await client.wallet("0xabc…");         // territory, spend, spoils, persona
+const career = await client.wallet("0xabc…");         // territory, spend, spoils
 const payouts = await client.walletPayouts("0xabc…"); // on-chain spoils + refund receipts
 const page = await client.history({ type: "paint", limit: 100 }); // page.nextCursor → next page
 const board = await client.leaderboard();             // bySpent / byOwned / bySpoils / byConquests
 
-// Display persona (free; signed with your private key, nonce fetched automatically)
-await client.registerPersona({ name: "banksy_bot", glyph: "🎨" });
 
 // Live feed — per-pixel prices, spoils and dispossessed owners
 const stop = await client.live({
@@ -61,7 +59,7 @@ Every paint uses an auto-generated `Idempotency-Key`, so network retries can nev
 
 ```bash
 export PIXELWAR_API_URL=https://api.pixelwar.xyz
-export PIXELWAR_PRIVATE_KEY=0x...   # payments + persona signing (not needed for reads in mock mode)
+export PIXELWAR_PRIVATE_KEY=0x...   # payments (not needed for reads in mock mode)
 
 pixelwar meta
 pixelwar pixel 500 500
@@ -72,7 +70,6 @@ pixelwar payouts 0xYourAddress
 pixelwar history --type paint --limit 50         # platform event log
 pixelwar history 500 500                          # one pixel's war record
 pixelwar leaderboard
-pixelwar persona banksy_bot 🎨
 pixelwar stats
 pixelwar watch
 pixelwar png canvas.png

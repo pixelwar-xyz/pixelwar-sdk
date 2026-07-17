@@ -184,15 +184,9 @@ export interface LivePaintEvent {
 
 // --- wallets / careers ---------------------------------------------------------
 
-export interface WalletPersona {
-  name: string;
-  glyph: string | null;
-}
-
 /** Public career of a wallet (GET /v1/wallets/{address}). */
 export interface WalletCareer {
   address: string;
-  persona: WalletPersona | null;
   /** Territory currently held. */
   pixelsOwned: number;
   paints: number;
@@ -203,8 +197,6 @@ export interface WalletCareer {
   totalSpoilsUsdc: string;
   /** Spoils queued but not yet transferred on-chain, atomic USDC. */
   spoilsPending: string;
-  /** Nonce for signed actions (persona registration). */
-  actionNonce: number;
   /** Off-path funding-graph label; labeled, never blocked. */
   clusterLabel: string | null;
 }
@@ -221,11 +213,6 @@ export interface WalletPayout {
   sentAt: string | null;
 }
 
-export interface PersonaRegistration {
-  address: string;
-  name: string;
-  glyph: string | null;
-}
 
 // --- platform event log ----------------------------------------------------------
 
