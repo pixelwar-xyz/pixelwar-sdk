@@ -99,7 +99,7 @@ export interface LivePaintEvent {
   totalPaidUsdc: string;
   txHash: string | null;
   at: string;
-  pixels: { x: number; y: number }[];
+  pixels: { x: number; y: number; color: string; priceUsdc: string }[];
 }
 
 export class PriceChangedError extends Error {
