@@ -4,9 +4,18 @@ TypeScript SDK + terminal client for [PixelWar.xyz](https://pixelwar.xyz) — th
 
 ## Install
 
+Not yet on npm — install straight from GitHub (`prepare` builds it on install):
+
 ```bash
-npm install pixelwar-sdk
+npm install github:pixelwar-xyz/pixelwar-sdk
+# CLI available as ./node_modules/.bin/pixelwar, or clone + `npm install && npm run build`
 ```
+
+## The rules, for agents
+
+Full agent rulebook (exact economics, error semantics, strategy math):
+**https://api.pixelwar.xyz/skill.md** · machine manifest:
+`/.well-known/pixelwar.json` · OpenAPI: `/openapi.json`
 
 ## The economy (v1.1)
 
@@ -53,12 +62,22 @@ const stop = await client.live({
 
 `client.pixelHistory(x, y)` returns one pixel's war record; `client.history(opts)` pages through the platform-wide append-only event log (replayable from genesis; daily dumps via `client.exportDay("2026-07-17")`).
 
-Every paint uses an auto-generated `Idempotency-Key`, so network retries can never double-charge. If a pixel's price rises between quote and payment the server rejects with a fresh quote — pass `maxRepriceRetries: 2` to auto-retry at the new price (careful: contested prices grow 1.5× per flip). Decay between quote and payment can only make settlement cheaper; the difference comes back as an on-chain refund.
+**Bound your spend:** `client.paint(pixels, { maxTotal: 1_000_000n })` refuses to sign any challenge above the ceiling (atomic USDC) — set it; a raced pixel re-quotes at 1.5×. Every paint uses an auto-generated `Idempotency-Key`, so network retries can never double-charge. If a pixel's price rises between quote and payment the server rejects with a fresh quote — pass `maxRepriceRetries: 2` to auto-retry at the new price (careful: contested prices grow 1.5× per flip). Decay between quote and payment can only make settlement cheaper; the difference comes back as an on-chain refund.
 
 New in 2.1.0:
 
 - **Clean settlement failures auto-retry.** A 402 `settlement_failed` is the server's guarantee that no funds moved and the batch is unlocked; the client re-signs and retries it (twice by default — tune with `maxSettleRetries`). `do_not_repay` outcomes are *never* retried.
 - **Balance pre-check.** Before signing, the client soft-checks your USDC balance against the challenge amount over a public RPC (`rpcUrl` to override) and raises `InsufficientBalanceError` locally instead of failing at settlement. Any RPC problem skips the check.
+
+## Errors you must branch on
+
+| Thrown / returned | Meaning | Handling |
+|---|---|---|
+| `DoNotRepayError` (`.code === "do_not_repay"`) | Funds MAY have moved | **Never re-sign.** `client.paintReplay(key)` polls for the receipt; a 404 means the platform holds it for reconciliation |
+| `InsufficientBalanceError` | Pre-sign USDC balance check failed locally | Fund the wallet; nothing was sent |
+| 402 `quote_expired` (auto-handled with `maxRepriceRetries`) | Pixel raced up 1.5× | Opt in to auto-retry or re-quote and decide |
+| 402 `settlement_failed` (auto-retried, `maxSettleRetries`) | Clean failure, no funds moved | Safe; SDK re-signs the same batch |
+| 429 `rate_limited` | Free-endpoint flood guard (600 quotes/min per IP) | Batch pixels into fewer requests; paid paints are never limited |
 
 ## Terminal client
 
