@@ -67,6 +67,28 @@ export interface PaymentRequirements {
   extra: { name: string; version: string; requestHash: string };
 }
 
+
+// --- x402 v2 wire types (CAIP-2 networks, PAYMENT-* headers) -------------------
+
+export interface PaymentRequirementsV2 {
+  scheme: "exact";
+  /** CAIP-2 network id, e.g. "eip155:421614". */
+  network: string;
+  /** Amount required, atomic units (v1's maxAmountRequired). */
+  amount: string;
+  asset: string;
+  payTo: string;
+  maxTimeoutSeconds: number;
+  extra?: Record<string, unknown>;
+}
+
+export interface PaymentRequiredV2 {
+  x402Version: 2;
+  error?: string;
+  resource: { url: string; description?: string; mimeType?: string };
+  accepts: PaymentRequirementsV2[];
+}
+
 export interface PaymentRequired {
   x402Version: number;
   error: string;
@@ -74,6 +96,10 @@ export interface PaymentRequired {
   code?: string;
   accepts: PaymentRequirements[];
   quote: { total: string; totalUsdc: string; pixelCount: number };
+  /** Decoded PAYMENT-REQUIRED header (x402 v2 signal) — attached client-side;
+   *  lists v2-capable chains by CAIP-2 id (may include chains absent from the
+   *  v1 accepts, e.g. arbitrum-sepolia). */
+  v2?: PaymentRequiredV2;
 }
 
 export interface PaintedPixel {

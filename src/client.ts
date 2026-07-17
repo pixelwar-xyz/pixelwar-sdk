@@ -37,6 +37,26 @@ const CHAIN_IDS: Record<string, number> = {
 /** Deterministic payer used for mock-mode payments when no key is configured. */
 const MOCK_FALLBACK_PAYER = "0xA9E0770001111111111111111111111111111111";
 
+/**
+ * A payment entry normalized across x402 v1 (friendly network ids, X-PAYMENT)
+ * and v2 (CAIP-2 ids, PAYMENT-SIGNATURE). `network` is the friendly id when
+ * the chain is known to CHAIN_IDS (keeps balance checks and messages
+ * readable), the raw CAIP-2 id otherwise.
+ */
+interface SelectedPayment {
+  version: 1 | 2;
+  headerName: "x-payment" | "payment-signature";
+  network: string;
+  chainId: number | undefined;
+  amount: string;
+  asset: string;
+  payTo: string;
+  maxTimeoutSeconds: number;
+  extra: { name: string; version: string; requestHash?: string };
+  /** v2 only: the original accepted entry + resource, echoed in the envelope. */
+  v2?: { accepted: unknown; resource?: unknown };
+}
+
 export interface PixelWarClientOptions {
   /** API base URL, e.g. https://api.pixelwar.xyz */
   baseUrl?: string;
@@ -257,21 +277,9 @@ export class PixelWarClient {
     let settleAttempt = 0;
     for (;;) {
       const challenge = await this.paintChallenge(pixels);
-      // Pick the requested chain from the 402's accepts list, else the first
-      // (server lists them in priority order, primary first).
-      const req = opts.network
-        ? challenge.accepts.find((a) => a.network === opts.network)
-        : challenge.accepts[0];
-      if (!req) {
-        const offered = challenge.accepts.map((a) => a.network).join(", ");
-        throw new Error(
-          opts.network
-            ? `network "${opts.network}" not offered by the server (accepts: ${offered})`
-            : "server returned no payment requirements",
-        );
-      }
+      const req = this.selectPayment(challenge, opts.network);
 
-      const required = BigInt(req.maxAmountRequired);
+      const required = BigInt(req.amount);
       if (ceiling !== null && required > ceiling) {
         throw new SpendLimitError(required, ceiling);
       }
@@ -281,7 +289,7 @@ export class PixelWarClient {
       const header = mock ? this.buildMockPayment(req) : await this.signPayment(req);
 
       try {
-        return await this.paintWithPayment(pixels, header, idempotencyKey);
+        return await this.paintWithPayment(pixels, header, idempotencyKey, req.headerName);
       } catch (err) {
         if (err instanceof PriceChangedError && attempt < this.maxRepriceRetries) {
           attempt++;
@@ -314,7 +322,7 @@ export class PixelWarClient {
    * Soft: any RPC problem skips the check (settlement stays the source of
    * truth).
    */
-  private async assertBalance(req: PaymentRequirements): Promise<void> {
+  private async assertBalance(req: SelectedPayment): Promise<void> {
     if (!this.account) return;
     const rpc = this.rpcUrl ?? DEFAULT_RPC[req.network];
     if (!rpc) return;
@@ -346,7 +354,7 @@ export class PixelWarClient {
     } catch {
       return;
     }
-    const required = BigInt(req.maxAmountRequired);
+    const required = BigInt(req.amount);
     if (balance < required) {
       throw new InsufficientBalanceError(balance, required, req.asset);
     }
@@ -383,6 +391,70 @@ export class PixelWarClient {
     return null;
   }
 
+  /**
+   * Pick the payment entry for `wanted` (friendly id like "arbitrum-sepolia",
+   * or a CAIP-2 id) across BOTH protocol generations offered by the 402:
+   * v1 entries are preferred where available (battle-tested path); a chain
+   * offered only in the v2 header (e.g. arbitrum-sepolia) is paid via v2.
+   * Everything downstream consumes the normalized SelectedPayment.
+   */
+  private selectPayment(challenge: PaymentRequired, wanted?: string): SelectedPayment {
+    const fromV1 = (a: PaymentRequirements): SelectedPayment => ({
+      version: 1,
+      headerName: "x-payment",
+      network: a.network,
+      chainId: CHAIN_IDS[a.network],
+      amount: a.maxAmountRequired,
+      asset: a.asset,
+      payTo: a.payTo,
+      maxTimeoutSeconds: a.maxTimeoutSeconds,
+      extra: a.extra,
+    });
+    const fromV2 = (a: NonNullable<PaymentRequired["v2"]>["accepts"][number]): SelectedPayment => {
+      const m = /^eip155:(\d+)$/.exec(a.network);
+      if (!m) throw new Error(`network "${a.network}" is not an EVM chain — this SDK version cannot pay on it`);
+      const chainId = Number(m[1]);
+      const friendly = Object.entries(CHAIN_IDS).find(([, id]) => id === chainId)?.[0];
+      const extra = (a.extra ?? {}) as { name?: string; version?: string; requestHash?: string };
+      if (typeof extra.name !== "string" || typeof extra.version !== "string") {
+        throw new Error(`v2 entry for ${a.network} lacks the EIP-712 domain in extra — refusing to sign`);
+      }
+      return {
+        version: 2,
+        headerName: "payment-signature",
+        network: friendly ?? a.network,
+        chainId,
+        amount: a.amount,
+        asset: a.asset,
+        payTo: a.payTo,
+        maxTimeoutSeconds: a.maxTimeoutSeconds,
+        extra: extra as SelectedPayment["extra"],
+        v2: { accepted: a, resource: challenge.v2?.resource },
+      };
+    };
+
+    const v2accepts = challenge.v2?.accepts ?? [];
+    if (wanted) {
+      const v1 = challenge.accepts.find((a) => a.network === wanted);
+      if (v1) return fromV1(v1);
+      const wantedCaip2 = wanted.includes(":")
+        ? wanted
+        : CHAIN_IDS[wanted] !== undefined
+          ? `eip155:${CHAIN_IDS[wanted]}`
+          : null;
+      const v2 = wantedCaip2 ? v2accepts.find((a) => a.network === wantedCaip2) : undefined;
+      if (v2) return fromV2(v2);
+      const offered = [
+        ...challenge.accepts.map((a) => a.network),
+        ...v2accepts.map((a) => `${a.network} (v2)`),
+      ].join(", ");
+      throw new Error(`network "${wanted}" not offered by the server (accepts: ${offered})`);
+    }
+    if (challenge.accepts[0]) return fromV1(challenge.accepts[0]);
+    if (v2accepts[0]) return fromV2(v2accepts[0]);
+    throw new Error("server returned no payment requirements");
+  }
+
   private async paintChallenge(pixels: PixelPaint[]): Promise<PaymentRequired> {
     const res = await fetch(`${this.baseUrl}/v1/paint`, {
       method: "POST",
@@ -392,19 +464,31 @@ export class PixelWarClient {
     if (res.status !== 402) {
       throw new Error(`expected 402 challenge, got ${res.status}: ${await res.text()}`);
     }
-    return (await res.json()) as PaymentRequired;
+    const challenge = (await res.json()) as PaymentRequired;
+    // The v2 signal rides a header on the SAME 402; it may offer chains the
+    // v1 body can't (v2-only facilitators, e.g. arbitrum-sepolia).
+    const v2Header = res.headers.get("payment-required");
+    if (v2Header) {
+      try {
+        challenge.v2 = JSON.parse(Buffer.from(v2Header, "base64").toString("utf8"));
+      } catch {
+        /* malformed header — v1 body remains authoritative */
+      }
+    }
+    return challenge;
   }
 
   private async paintWithPayment(
     pixels: PixelPaint[],
     paymentHeader: string,
     idempotencyKey: string,
+    headerName: "x-payment" | "payment-signature" = "x-payment",
   ): Promise<PaintResult> {
     const res = await fetch(`${this.baseUrl}/v1/paint`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-payment": paymentHeader,
+        [headerName]: paymentHeader,
         "idempotency-key": idempotencyKey,
       },
       body: JSON.stringify({ pixels }),
@@ -456,13 +540,13 @@ export class PixelWarClient {
     return this.mock;
   }
 
-  private async signPayment(req: PaymentRequirements): Promise<string> {
+  private async signPayment(req: SelectedPayment): Promise<string> {
     if (!this.account) {
       throw new Error(
         "no privateKey configured — required for real x402 payments (or use mock mode)",
       );
     }
-    const chainId = CHAIN_IDS[req.network];
+    const chainId = req.chainId;
     if (!chainId) throw new Error(`unknown network: ${req.network}`);
 
     const now = Math.floor(Date.now() / 1000);
@@ -470,7 +554,7 @@ export class PixelWarClient {
     const authorization = {
       from: this.account.address,
       to: req.payTo as `0x${string}`,
-      value: BigInt(req.maxAmountRequired),
+      value: BigInt(req.amount),
       validAfter: BigInt(now - 60),
       validBefore: BigInt(now + (req.maxTimeoutSeconds || 120)),
       nonce,
@@ -502,36 +586,44 @@ export class PixelWarClient {
       value: authorization.value.toString(),
       validAfter: authorization.validAfter.toString(),
       validBefore: authorization.validBefore.toString(),
-    }, req.network);
+    }, req);
   }
 
-  private buildMockPayment(req: PaymentRequirements): string {
+  private buildMockPayment(req: SelectedPayment): string {
     const from = this.account?.address ?? MOCK_FALLBACK_PAYER;
     const now = Math.floor(Date.now() / 1000);
     const nonce = `0x${Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex")}`;
     return this.encodeHeader("0xmock", {
       from,
       to: req.payTo,
-      value: req.maxAmountRequired,
+      value: req.amount,
       validAfter: String(now - 60),
       validBefore: String(now + 120),
       nonce,
-    }, req.network);
+    }, req);
   }
 
   private encodeHeader(
     signature: string,
     authorization: Record<string, string>,
-    network: string,
+    req: SelectedPayment,
   ): string {
-    return Buffer.from(
-      JSON.stringify({
-        x402Version: 1,
-        scheme: "exact",
-        network,
-        payload: { signature, authorization },
-      }),
-    ).toString("base64");
+    const envelope =
+      req.version === 2
+        ? {
+            x402Version: 2,
+            ...(req.v2?.resource ? { resource: req.v2.resource } : {}),
+            // Echo the server's own accepted entry verbatim per spec.
+            accepted: req.v2?.accepted,
+            payload: { signature, authorization },
+          }
+        : {
+            x402Version: 1,
+            scheme: "exact",
+            network: req.network,
+            payload: { signature, authorization },
+          };
+    return Buffer.from(JSON.stringify(envelope)).toString("base64");
   }
 
   // --- live feed -------------------------------------------------------------------
