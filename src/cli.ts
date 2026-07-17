@@ -35,9 +35,9 @@ usage:
   pixelwar quote <x,y,#color> [...]      price a batch without paying
   pixelwar paint <x,y,#color> [...] [--dry-run] [--network <chain>]
                                          paint pixels (x402 paid!)
-  pixelwar paint --file <specs.txt> [--batch N] [--journal J] [--dry-run]
+  pixelwar paint --file <specs.txt> [--batch N] [--journal J] [--dry-run] [--network <chain>]
                                          paint a whole spec file in journaled batches
-  pixelwar draw <image.png> --at <x,y> [--batch N] [--journal J] [--dry-run]
+  pixelwar draw <image.png> --at <x,y> [--batch N] [--journal J] [--dry-run] [--network <chain>]
                  [--skip-color #rrggbb]  paint a PNG (transparent pixels skipped)
   pixelwar replay <idempotency-key>      recover a paint result without re-paying
   pixelwar wallet <address>              public career: territory, spend, spoils
@@ -54,7 +54,9 @@ never re-paid (each carries a stable Idempotency-Key the server replays).
 env:
   PIXELWAR_API_URL        API base url (default https://api.pixelwar.xyz)
   PIXELWAR_PRIVATE_KEY    wallet key for payments
-  PIXELWAR_RPC_URL        RPC for the pre-sign balance check (default: public Base RPC)
+  PIXELWAR_RPC_URL        RPC for the pre-sign balance check (default: a public RPC
+                          for the payment chain; set it to THAT chain's RPC if used
+                          together with --network)
 
 examples:
   pixelwar paint 500,500,#ff0044 501,500,#ff0044
@@ -174,6 +176,13 @@ interface Journal {
   specsHash: string;
   pixelCount: number;
   batchSize: number;
+  /**
+   * The chain every batch pays on — pinned at job start (explicit --network,
+   * else the server's primary at first quote) so a resume or mid-job server
+   * reorder can never split one job's payments across chains. Absent only in
+   * journals written before multi-chain; those pin on their next batch.
+   */
+  network?: string | null;
   batches: JournalBatch[];
 }
 
@@ -203,7 +212,7 @@ function parseBatchSize(value: string | undefined): number {
  */
 async function paintBatched(
   specs: Spec[],
-  opts: { batchSize: number; journalPath: string; dryRun: boolean },
+  opts: { batchSize: number; journalPath: string; dryRun: boolean; network?: string },
 ): Promise<void> {
   let journal: Journal;
   const specsHash = hashSpecs(specs);
@@ -236,6 +245,15 @@ async function paintBatched(
       );
       process.exit(1);
     }
+    // One job, one chain: a resume must keep paying where the finished
+    // batches paid. An explicit conflicting --network is a different job.
+    if (opts.network && journal.network && opts.network !== journal.network) {
+      console.error(
+        `journal ${opts.journalPath} pays on ${journal.network} but --network ${opts.network} was given — ` +
+          `finish the journal on its own chain, or delete it to start over`,
+      );
+      process.exit(1);
+    }
     const done = journal.batches.filter((b) => b.status === "done").length;
     console.error(
       `resuming from ${opts.journalPath}: ${done}/${journal.batches.length} batches already painted`,
@@ -248,6 +266,7 @@ async function paintBatched(
       specsHash,
       pixelCount: specs.length,
       batchSize: opts.batchSize,
+      network: opts.network ?? null,
       batches: chunk(specs, opts.batchSize).map((pixels) => ({
         key: randomUUID(),
         pixels,
@@ -300,13 +319,22 @@ async function paintBatched(
       console.error(`batch ${i + 1}/${total}: ${batch.pixels.length}px = ${quote.totalUsdc} USDC`);
       continue;
     }
+    // Pin the job's chain on first payment if it wasn't set explicitly: the
+    // quote echoes the server's CURRENT primary, and persisting it means
+    // later batches/resumes fail loudly if the server's offer changes rather
+    // than silently switching chains mid-job.
+    if (!journal.network) {
+      journal.network = opts.network ?? quote.network;
+      save();
+    }
     console.error(
-      `batch ${i + 1}/${total}: ${batch.pixels.length}px for ${quote.totalUsdc} USDC (key ${batch.key})`,
+      `batch ${i + 1}/${total}: ${batch.pixels.length}px for ${quote.totalUsdc} USDC on ${journal.network} (key ${batch.key})`,
     );
     try {
       const result = await client.paint(batch.pixels, {
         maxTotal: quote.total,
         idempotencyKey: batch.key,
+        network: journal.network,
       });
       batch.status = "done";
       batch.txHash = result.txHash;
@@ -406,6 +434,7 @@ try {
           batchSize: parseBatchSize(flags.batch),
           journalPath: flags.journal ?? `${flags.file}.journal.json`,
           dryRun: bools.has("dry-run"),
+          ...(flags.network ? { network: flags.network } : {}),
         });
         break;
       }
@@ -519,6 +548,7 @@ try {
         batchSize: parseBatchSize(flags.batch),
         journalPath: flags.journal ?? `${file}.journal.json`,
         dryRun: bools.has("dry-run"),
+        ...(flags.network ? { network: flags.network } : {}),
       });
       break;
     }

@@ -58,8 +58,10 @@ export interface PixelWarClientOptions {
   maxSettleRetries?: number;
   /**
    * JSON-RPC endpoint for the soft pre-sign USDC balance check. Defaults to
-   * the public Base RPC for the challenge's network; the check is skipped
-   * when the RPC is unreachable.
+   * a public RPC for the chain being paid on; the check is skipped when the
+   * RPC is unreachable. NOTE: this single override applies to EVERY chain —
+   * when paying on a non-default `network`, point it at THAT chain's RPC (a
+   * wrong-chain RPC makes the check silently skip).
    */
   rpcUrl?: string;
 }
@@ -70,8 +72,10 @@ const DEFAULT_RPC: Record<string, string> = {
   base: "https://mainnet.base.org",
   "arbitrum-sepolia": "https://sepolia-rollup.arbitrum.io/rpc",
   arbitrum: "https://arb1.arbitrum.io/rpc",
-  "polygon-amoy": "https://rpc-amoy.polygon.technology",
-  polygon: "https://polygon-rpc.com",
+  // publicnode endpoints: the official rpc-amoy.polygon.technology and
+  // polygon-rpc.com were both dead/keyless when probed (2026-07-17).
+  "polygon-amoy": "https://polygon-amoy-bor-rpc.publicnode.com",
+  polygon: "https://polygon-bor-rpc.publicnode.com",
 };
 
 export class PixelWarClient {
