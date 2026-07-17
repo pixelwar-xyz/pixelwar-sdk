@@ -6,15 +6,22 @@ import {
   SpendLimitError,
   type ActivityEvent,
   type CanvasMeta,
+  type HistoryOptions,
+  type HistoryPage,
   type Leaderboard,
   type LivePaintEvent,
   type PaintResult,
   type PaymentRequired,
   type PaymentRequirements,
+  type PersonaRegistration,
+  type PixelHistoryEvent,
   type PixelInfo,
   type PixelPaint,
+  type PlatformEvent,
   type Quote,
   type Stats,
+  type WalletCareer,
+  type WalletPayout,
 } from "./types.js";
 
 const CHAIN_IDS: Record<string, number> = {
@@ -85,8 +92,48 @@ export class PixelWarClient {
     return this.get(`/v1/pixels/${x}/${y}`);
   }
 
-  history(x: number, y: number) {
-    return this.get<{ events: unknown[] }>(`/v1/pixels/${x}/${y}/history`);
+  /** Paint history of one pixel (its war record), most recent first. */
+  pixelHistory(x: number, y: number): Promise<{ events: PixelHistoryEvent[] }> {
+    return this.get(`/v1/pixels/${x}/${y}/history`);
+  }
+
+  /**
+   * The append-only platform event log, cursor-paginated and replayable from
+   * genesis (`GET /v1/history`). Pass `page.nextCursor` back as `after` until
+   * it is null.
+   *
+   * Backward-compatible overload: `history(x, y)` with two numbers still
+   * returns the single-pixel paint history (same as `pixelHistory`).
+   */
+  history(opts?: HistoryOptions): Promise<HistoryPage>;
+  /** @deprecated use `pixelHistory(x, y)` */
+  history(x: number, y: number): Promise<{ events: PixelHistoryEvent[] }>;
+  history(
+    optsOrX?: HistoryOptions | number,
+    y?: number,
+  ): Promise<HistoryPage> | Promise<{ events: PixelHistoryEvent[] }> {
+    if (typeof optsOrX === "number" && typeof y === "number") {
+      return this.pixelHistory(optsOrX, y);
+    }
+    const opts = (optsOrX as HistoryOptions | undefined) ?? {};
+    const q = new URLSearchParams();
+    if (opts.after !== undefined) q.set("after", String(opts.after));
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    if (opts.type) q.set("type", opts.type);
+    if (opts.wallet) q.set("wallet", opts.wallet);
+    const qs = q.toString();
+    return this.get<HistoryPage>(`/v1/history${qs ? `?${qs}` : ""}`);
+  }
+
+  /** Daily bulk dump of the event log (`GET /v1/export/{day}.ndjson`), parsed. */
+  async exportDay(day: string): Promise<PlatformEvent[]> {
+    const res = await fetch(`${this.baseUrl}/v1/export/${day}.ndjson`);
+    if (!res.ok) throw new Error(`export ${day}: ${res.status} ${await res.text()}`);
+    const text = await res.text();
+    return text
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as PlatformEvent);
   }
 
   stats(): Promise<Stats> {
@@ -99,6 +146,39 @@ export class PixelWarClient {
 
   recentEvents(): Promise<{ events: ActivityEvent[] }> {
     return this.get("/v1/events/recent");
+  }
+
+  // --- wallets / careers ------------------------------------------------------
+
+  /** Public career of any wallet: persona, territory, spend, conquest spoils. */
+  wallet(address: string): Promise<WalletCareer> {
+    return this.get(`/v1/wallets/${address.toLowerCase()}`);
+  }
+
+  /** Recent on-chain payouts (conquest spoils and refunds) to a wallet. */
+  walletPayouts(address: string): Promise<{ payouts: WalletPayout[] }> {
+    return this.get(`/v1/wallets/${address.toLowerCase()}/payouts`);
+  }
+
+  /**
+   * Register or update this wallet's display persona (free, no KYC).
+   * Signs the server's EIP-191 challenge with the configured private key:
+   * `pixelwar-persona:{lowercase address}:{name}:{glyph or empty}:{actionNonce}`
+   * where the nonce comes from `wallet(address)`.
+   */
+  async registerPersona(opts: { name: string; glyph?: string }): Promise<PersonaRegistration> {
+    if (!this.account) {
+      throw new Error("no privateKey configured — persona registration must be signed by the wallet");
+    }
+    const address = this.account.address.toLowerCase();
+    const { actionNonce } = await this.wallet(address);
+    const message = `pixelwar-persona:${address}:${opts.name}:${opts.glyph ?? ""}:${actionNonce}`;
+    const signature = await this.account.signMessage({ message });
+    return this.post(`/v1/wallets/${address}/persona`, {
+      name: opts.name,
+      ...(opts.glyph !== undefined ? { glyph: opts.glyph } : {}),
+      signature,
+    });
   }
 
   /** Full canvas snapshot as PNG bytes. */
