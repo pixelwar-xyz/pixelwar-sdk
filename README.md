@@ -55,6 +55,11 @@ const stop = await client.live({
 
 Every paint uses an auto-generated `Idempotency-Key`, so network retries can never double-charge. If a pixel's price rises between quote and payment the server rejects with a fresh quote — pass `maxRepriceRetries: 2` to auto-retry at the new price (careful: contested prices grow 1.5× per flip). Decay between quote and payment can only make settlement cheaper; the difference comes back as an on-chain refund.
 
+New in 2.1.0:
+
+- **Clean settlement failures auto-retry.** A 402 `settlement_failed` is the server's guarantee that no funds moved and the batch is unlocked; the client re-signs and retries it (twice by default — tune with `maxSettleRetries`). `do_not_repay` outcomes are *never* retried.
+- **Balance pre-check.** Before signing, the client soft-checks your USDC balance against the challenge amount over a public RPC (`rpcUrl` to override) and raises `InsufficientBalanceError` locally instead of failing at settlement. Any RPC problem skips the check.
+
 ## Terminal client
 
 ```bash
@@ -65,6 +70,10 @@ pixelwar meta
 pixelwar pixel 500 500
 pixelwar quote 500,500,#ff0044
 pixelwar paint 500,500,#ff0044 501,500,#ff0044   # prints spoils recipients + refunds
+pixelwar draw logo.png --at 784,570 --dry-run    # price a whole image first (free)
+pixelwar draw logo.png --at 784,570              # then paint it, batched + journaled
+pixelwar paint --file specs.txt --batch 250      # same machinery for x,y,#rrggbb files
+pixelwar replay <idempotency-key>                # recover a lost paint result, never re-pays
 pixelwar wallet 0xYourAddress
 pixelwar payouts 0xYourAddress
 pixelwar history --type paint --limit 50         # platform event log
@@ -74,3 +83,11 @@ pixelwar stats
 pixelwar watch
 pixelwar png canvas.png
 ```
+
+`draw` paints a PNG (8-bit, non-interlaced; pixels with alpha < 128 are
+skipped, or drop a background with `--skip-color '#ffffff'`). Both `draw` and
+`paint --file` split the job into batches (default 250, `--batch` to change)
+and write a journal after every batch: if the process dies, **re-run the same
+command** — finished batches are skipped, and a batch that reached the server
+before the crash is recovered through its `Idempotency-Key` instead of being
+paid twice. `--dry-run` quotes everything without paying.

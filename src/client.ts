@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import {
   DoNotRepayError,
+  InsufficientBalanceError,
   PaymentRejectedError,
   PriceChangedError,
   SpendLimitError,
@@ -44,13 +45,34 @@ export interface PixelWarClientOptions {
   mock?: boolean;
   /** Re-quote and retry this many times when a price changes mid-flight. */
   maxRepriceRetries?: number;
+  /**
+   * Re-sign and retry this many times on a clean `settlement_failed`
+   * rejection (transient facilitator failure — the server guarantees no
+   * funds moved and frees the batch). Default 2. Never applies to
+   * `do_not_repay` outcomes, which are never retried.
+   */
+  maxSettleRetries?: number;
+  /**
+   * JSON-RPC endpoint for the soft pre-sign USDC balance check. Defaults to
+   * the public Base RPC for the challenge's network; the check is skipped
+   * when the RPC is unreachable.
+   */
+  rpcUrl?: string;
 }
+
+/** Public RPCs used for the soft balance pre-check (overridable via rpcUrl). */
+const DEFAULT_RPC: Record<string, string> = {
+  "base-sepolia": "https://sepolia.base.org",
+  base: "https://mainnet.base.org",
+};
 
 export class PixelWarClient {
   readonly baseUrl: string;
   private account: PrivateKeyAccount | null;
   private mock: boolean | null;
   private maxRepriceRetries: number;
+  private maxSettleRetries: number;
+  private rpcUrl: string | undefined;
   private metaCache: CanvasMeta | null = null;
 
   constructor(opts: PixelWarClientOptions = {}) {
@@ -58,6 +80,8 @@ export class PixelWarClient {
     this.account = opts.privateKey ? privateKeyToAccount(opts.privateKey) : null;
     this.mock = opts.mock ?? null;
     this.maxRepriceRetries = opts.maxRepriceRetries ?? 0;
+    this.maxSettleRetries = opts.maxSettleRetries ?? 2;
+    this.rpcUrl = opts.rpcUrl;
   }
 
   /** The wallet address used for payments. */
@@ -218,6 +242,7 @@ export class PixelWarClient {
     }
 
     let attempt = 0;
+    let settleAttempt = 0;
     for (;;) {
       const challenge = await this.paintChallenge(pixels);
       const req = challenge.accepts[0];
@@ -228,9 +253,9 @@ export class PixelWarClient {
         throw new SpendLimitError(required, ceiling);
       }
 
-      const header = (await this.isMock())
-        ? this.buildMockPayment(req)
-        : await this.signPayment(req);
+      const mock = await this.isMock();
+      if (!mock) await this.assertBalance(req);
+      const header = mock ? this.buildMockPayment(req) : await this.signPayment(req);
 
       try {
         return await this.paintWithPayment(pixels, header, idempotencyKey);
@@ -239,8 +264,68 @@ export class PixelWarClient {
           attempt++;
           continue;
         }
+        // A clean settlement failure is the server's explicit "no funds
+        // moved, batch unlocked, safe to sign again" — the pending payment
+        // row is deleted and the idempotency gate freed, so retrying under
+        // the SAME key with a fresh signature cannot double-charge (and the
+        // key still replays any earlier success). do_not_repay outcomes
+        // raise DoNotRepayError and are never retried.
+        if (
+          err instanceof PaymentRejectedError &&
+          err.response.error === "settlement_failed" &&
+          settleAttempt < this.maxSettleRetries
+        ) {
+          settleAttempt++;
+          await new Promise((r) => setTimeout(r, 1500 * 2 ** (settleAttempt - 1)));
+          continue;
+        }
         throw err;
       }
+    }
+  }
+
+  /**
+   * Soft pre-sign check that the wallet's USDC covers the challenge amount —
+   * turns "balance too low" into a clear local error BEFORE anything is
+   * signed, instead of a settlement failure after the payment round-trip.
+   * Soft: any RPC problem skips the check (settlement stays the source of
+   * truth).
+   */
+  private async assertBalance(req: PaymentRequirements): Promise<void> {
+    if (!this.account) return;
+    const rpc = this.rpcUrl ?? DEFAULT_RPC[req.network];
+    if (!rpc) return;
+    let balance: bigint;
+    try {
+      const res = await fetch(rpc, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        // Bounded: a hung public RPC must not stall the challenge→sign window
+        // (the parked quote and authorization validity are both time-limited).
+        signal: AbortSignal.timeout(3_000),
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_call",
+          params: [
+            {
+              to: req.asset,
+              // balanceOf(address) selector + the wallet address, ABI-padded.
+              data: `0x70a08231${this.account.address.slice(2).toLowerCase().padStart(64, "0")}`,
+            },
+            "latest",
+          ],
+        }),
+      });
+      const body = (await res.json()) as { result?: unknown };
+      if (typeof body.result !== "string" || !/^0x[0-9a-fA-F]+$/.test(body.result)) return;
+      balance = BigInt(body.result);
+    } catch {
+      return;
+    }
+    const required = BigInt(req.maxAmountRequired);
+    if (balance < required) {
+      throw new InsufficientBalanceError(balance, required, req.asset);
     }
   }
 
@@ -249,10 +334,18 @@ export class PixelWarClient {
    * (`GET /v1/paints/replay`). Returns null when the server has no stored
    * result (yet). Never constructs or signs a payment — this is the ONLY
    * safe recovery call after a DoNotRepayError.
+   *
+   * Throws when no wallet is configured in real-payment mode: results are
+   * keyed by (key, payer), so answering null there would be a false
+   * "never landed" that invites a double-pay.
    */
   async paintReplay(idempotencyKey: string): Promise<PaintResult | null> {
     const payer = this.account?.address ?? ((await this.isMock()) ? MOCK_FALLBACK_PAYER : null);
-    if (!payer) return null;
+    if (!payer) {
+      throw new Error(
+        "cannot look up a replay without a wallet: results are keyed by (key, payer) — configure the SAME privateKey that made the payment",
+      );
+    }
     return this.fetchReplay(idempotencyKey, payer);
   }
 

@@ -273,6 +273,25 @@ export class PaymentRejectedError extends Error {
 }
 
 /**
+ * Raised BEFORE signing when the wallet's USDC balance can't cover the
+ * challenge amount (soft pre-check against a public RPC). Nothing was signed
+ * or sent — top up the wallet or split the batch below the balance.
+ */
+export class InsufficientBalanceError extends Error {
+  constructor(
+    public readonly balance: bigint,
+    public readonly required: bigint,
+    /** USDC contract the balance was checked against. */
+    public readonly asset: string,
+  ) {
+    super(
+      `wallet holds ${balance} atomic USDC but this batch needs ${required} — top up or split the batch (nothing was signed)`,
+    );
+    this.name = "InsufficientBalanceError";
+  }
+}
+
+/**
  * The server reported a machine-readable `code: "do_not_repay"` after the
  * payment header was submitted (settlement_outcome_unknown or
  * paint_apply_failed): funds may already have moved and the payment is held
