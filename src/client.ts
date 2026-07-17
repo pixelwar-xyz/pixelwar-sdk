@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import {
+  DoNotRepayError,
   PaymentRejectedError,
   PriceChangedError,
   SpendLimitError,
@@ -264,6 +265,18 @@ export class PixelWarClient {
     }
   }
 
+  /**
+   * Look up the stored result of a previous paint by its Idempotency-Key
+   * (`GET /v1/paints/replay`). Returns null when the server has no stored
+   * result (yet). Never constructs or signs a payment — this is the ONLY
+   * safe recovery call after a DoNotRepayError.
+   */
+  async paintReplay(idempotencyKey: string): Promise<PaintResult | null> {
+    const payer = this.account?.address ?? ((await this.isMock()) ? MOCK_FALLBACK_PAYER : null);
+    if (!payer) return null;
+    return this.fetchReplay(idempotencyKey, payer);
+  }
+
   /** Look up the stored result of a previous paint by Idempotency-Key. */
   private async fetchReplay(key: string, payer: string): Promise<PaintResult | null> {
     try {
@@ -324,6 +337,14 @@ export class PixelWarClient {
       if (body.error === "idempotency_conflict") {
         throw new Error(
           `idempotency key "${idempotencyKey}" was already used with a DIFFERENT batch — reuse a key only for retries of the exact same pixels`,
+        );
+      }
+      // The one code that must never be swallowed: funds may already have
+      // moved, so callers need to distinguish "safe to re-sign" from this.
+      if (body.code === "do_not_repay") {
+        throw new DoNotRepayError(
+          body.message ?? body.error ?? `paint failed: ${res.status}`,
+          body.error,
         );
       }
       throw new Error(body.message ?? body.error ?? `paint failed: ${res.status}`);

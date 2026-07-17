@@ -67,14 +67,21 @@ function parsePixels(specs: string[]) {
     console.error("no pixels given (expected x,y,#rrggbb …)");
     process.exit(1);
   }
-  return specs.map((spec) => {
+  // Dedupe repeated coordinates, last color wins (same Map semantics as the
+  // server's /v1/quote) — /v1/paint rejects duplicate coordinates with 400,
+  // so without this a batch could quote fine and then fail to paint.
+  const byCoord = new Map<string, { x: number; y: number; color: string }>();
+  for (const spec of specs) {
     const [x, y, color] = spec.split(",");
     if (!color || !/^#[0-9a-fA-F]{6}$/.test(color)) {
       console.error(`bad pixel spec: "${spec}" (expected x,y,#rrggbb)`);
       process.exit(1);
     }
-    return { x: parseCoord(x, "x"), y: parseCoord(y, "y"), color };
-  });
+    const px = parseCoord(x, "x");
+    const py = parseCoord(y, "y");
+    byCoord.set(`${px},${py}`, { x: px, y: py, color });
+  }
+  return [...byCoord.values()];
 }
 
 function parseFlags(argv: string[]): Record<string, string> {

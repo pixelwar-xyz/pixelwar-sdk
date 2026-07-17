@@ -284,3 +284,23 @@ export class PaymentRejectedError extends Error {
     this.name = "PaymentRejectedError";
   }
 }
+
+/**
+ * The server reported a machine-readable `code: "do_not_repay"` after the
+ * payment header was submitted (settlement_outcome_unknown or
+ * paint_apply_failed): funds may already have moved and the payment is held
+ * for reconciliation. NEVER sign a new payment for this batch — poll the
+ * stored result via `PixelWarClient.paintReplay(idempotencyKey)` instead.
+ */
+export class DoNotRepayError extends Error {
+  /** Machine-readable code from the error body, always "do_not_repay". */
+  readonly code = "do_not_repay" as const;
+  constructor(
+    message: string,
+    /** The server's error identifier, e.g. "settlement_outcome_unknown" or "paint_apply_failed". */
+    public readonly serverError?: string,
+  ) {
+    super(message);
+    this.name = "DoNotRepayError";
+  }
+}
