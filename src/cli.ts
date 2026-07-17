@@ -21,6 +21,9 @@ const client = new PixelWarClient({
   ...(process.env.PIXELWAR_PRIVATE_KEY
     ? { privateKey: process.env.PIXELWAR_PRIVATE_KEY as `0x${string}` }
     : {}),
+  ...(process.env.PIXELWAR_SOLANA_PRIVATE_KEY
+    ? { solanaPrivateKey: process.env.PIXELWAR_SOLANA_PRIVATE_KEY }
+    : {}),
   ...(process.env.PIXELWAR_RPC_URL ? { rpcUrl: process.env.PIXELWAR_RPC_URL } : {}),
 });
 
@@ -53,7 +56,8 @@ never re-paid (each carries a stable Idempotency-Key the server replays).
 
 env:
   PIXELWAR_API_URL        API base url (default https://api.pixelwar.xyz)
-  PIXELWAR_PRIVATE_KEY    wallet key for payments
+  PIXELWAR_PRIVATE_KEY    EVM wallet key for payments (0x hex)
+  PIXELWAR_SOLANA_PRIVATE_KEY  Solana wallet key (base58) for --network solana-devnet
   PIXELWAR_RPC_URL        RPC for the pre-sign balance check (default: a public RPC
                           for the payment chain; set it to THAT chain's RPC if used
                           together with --network)

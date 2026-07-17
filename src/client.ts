@@ -36,6 +36,7 @@ const CHAIN_IDS: Record<string, number> = {
 
 /** Deterministic payer used for mock-mode payments when no key is configured. */
 const MOCK_FALLBACK_PAYER = "0xA9E0770001111111111111111111111111111111";
+const MOCK_SVM_PAYER = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PB5jyz1";
 
 /**
  * A payment entry normalized across x402 v1 (friendly network ids, X-PAYMENT)
@@ -45,23 +46,36 @@ const MOCK_FALLBACK_PAYER = "0xA9E0770001111111111111111111111111111111";
  */
 interface SelectedPayment {
   version: 1 | 2;
+  vm: "evm" | "svm";
   headerName: "x-payment" | "payment-signature";
   network: string;
   chainId: number | undefined;
   amount: string;
+  /** EVM: USDC contract. SVM: SPL mint. */
   asset: string;
   payTo: string;
   maxTimeoutSeconds: number;
-  extra: { name: string; version: string; requestHash?: string };
+  /** EVM: {name, version, requestHash}. SVM: {feePayer, memo}. */
+  extra: Record<string, string | undefined>;
   /** v2 only: the original accepted entry + resource, echoed in the envelope. */
   v2?: { accepted: unknown; resource?: unknown };
 }
 
+/** CAIP-2 ids of Solana networks this SDK build knows, → friendly id. */
+const SVM_CAIP2: Record<string, string> = {
+  "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": "solana-devnet",
+};
+const SVM_RPC: Record<string, string> = {
+  "solana-devnet": "https://api.devnet.solana.com",
+};
+
 export interface PixelWarClientOptions {
   /** API base URL, e.g. https://api.pixelwar.xyz */
   baseUrl?: string;
-  /** Hex private key for signing x402 payments (funded with USDC on Base). */
+  /** Hex private key for signing x402 payments on EVM chains (funded with USDC). */
   privateKey?: `0x${string}`;
+  /** base58 secret key for paying on Solana networks (funded with SPL USDC + a little SOL). */
+  solanaPrivateKey?: string;
   /**
    * Force mock payments (no key needed). Defaults to auto-detect from the
    * server's payment mode.
@@ -101,6 +115,7 @@ const DEFAULT_RPC: Record<string, string> = {
 export class PixelWarClient {
   readonly baseUrl: string;
   private account: PrivateKeyAccount | null;
+  private solanaSecret: string | undefined;
   private mock: boolean | null;
   private maxRepriceRetries: number;
   private maxSettleRetries: number;
@@ -110,6 +125,7 @@ export class PixelWarClient {
   constructor(opts: PixelWarClientOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? "https://api.pixelwar.xyz").replace(/\/$/, "");
     this.account = opts.privateKey ? privateKeyToAccount(opts.privateKey) : null;
+    this.solanaSecret = opts.solanaPrivateKey;
     this.mock = opts.mock ?? null;
     this.maxRepriceRetries = opts.maxRepriceRetries ?? 0;
     this.maxSettleRetries = opts.maxSettleRetries ?? 2;
@@ -266,7 +282,13 @@ export class PixelWarClient {
     // since doubled past the spend ceiling. Works in mock mode too — the
     // server keys records by the payer we'd pay as.
     if (opts.idempotencyKey) {
-      const payerForReplay = this.account?.address ?? (this.mock ? MOCK_FALLBACK_PAYER : null);
+      // Recover under whichever wallet we'd pay as. Prefer the EVM account;
+      // fall back to the Solana pubkey when only a Solana key is configured
+      // (so a solana-only client can still recover a lost result).
+      const payerForReplay =
+        this.account?.address ??
+        (this.solanaSecret ? (await this.solanaKeypair()).publicKey.toBase58() : null) ??
+        (this.mock ? MOCK_FALLBACK_PAYER : null);
       if (payerForReplay) {
         const replayed = await this.fetchReplay(opts.idempotencyKey, payerForReplay);
         if (replayed) return replayed;
@@ -286,7 +308,7 @@ export class PixelWarClient {
 
       const mock = await this.isMock();
       if (!mock) await this.assertBalance(req);
-      const header = mock ? this.buildMockPayment(req) : await this.signPayment(req);
+      const header = mock ? await this.buildMockPayment(req) : await this.signPayment(req);
 
       try {
         return await this.paintWithPayment(pixels, header, idempotencyKey, req.headerName);
@@ -323,6 +345,9 @@ export class PixelWarClient {
    * truth).
    */
   private async assertBalance(req: SelectedPayment): Promise<void> {
+    // SVM balance pre-check is skipped (soft): settlement remains the source
+    // of truth, and the SPL balance lookup would add another dependency path.
+    if (req.vm === "svm") return;
     if (!this.account) return;
     const rpc = this.rpcUrl ?? DEFAULT_RPC[req.network];
     if (!rpc) return;
@@ -401,6 +426,7 @@ export class PixelWarClient {
   private selectPayment(challenge: PaymentRequired, wanted?: string): SelectedPayment {
     const fromV1 = (a: PaymentRequirements): SelectedPayment => ({
       version: 1,
+      vm: "evm",
       headerName: "x-payment",
       network: a.network,
       chainId: CHAIN_IDS[a.network],
@@ -415,8 +441,29 @@ export class PixelWarClient {
           typeof a.asset !== "string" || typeof a.payTo !== "string") {
         throw new Error("malformed v2 payment entry (missing network/amount/asset/payTo) — refusing to sign");
       }
+      // Solana (SVM) v2 entry: base58 mint/payTo, extra {feePayer, memo}.
+      const svmFriendly = SVM_CAIP2[a.network];
+      if (svmFriendly) {
+        const extra = (a.extra ?? {}) as { feePayer?: string; memo?: string };
+        if (typeof extra.feePayer !== "string" || typeof extra.memo !== "string") {
+          throw new Error(`Solana entry for ${a.network} lacks feePayer/memo in extra — refusing to sign`);
+        }
+        return {
+          version: 2,
+          vm: "svm",
+          headerName: "payment-signature",
+          network: svmFriendly,
+          chainId: undefined,
+          amount: a.amount,
+          asset: a.asset,
+          payTo: a.payTo,
+          maxTimeoutSeconds: a.maxTimeoutSeconds,
+          extra: extra as SelectedPayment["extra"],
+          v2: { accepted: a, resource: challenge.v2?.resource },
+        };
+      }
       const m = /^eip155:(\d+)$/.exec(a.network);
-      if (!m) throw new Error(`network "${a.network}" is not an EVM chain — this SDK version cannot pay on it`);
+      if (!m) throw new Error(`network "${a.network}" is not a supported chain — this SDK version cannot pay on it`);
       const chainId = Number(m[1]);
       if (!Number.isSafeInteger(chainId) || chainId <= 0) {
         throw new Error(`network "${a.network}" has an out-of-range chain id — refusing to sign`);
@@ -438,6 +485,7 @@ export class PixelWarClient {
       }
       return {
         version: 2,
+        vm: "evm",
         headerName: "payment-signature",
         network: friendly,
         chainId,
@@ -466,7 +514,11 @@ export class PixelWarClient {
         : wanted;
       const v1 = challenge.accepts.find((a) => a.network === wantedFriendly);
       if (v1) return fromV1(v1);
-      const v2 = wantedCaip2 ? v2accepts.find((a) => a.network === wantedCaip2) : undefined;
+      // Solana: match by friendly id ("solana-devnet") or its CAIP-2 id.
+      const wantedSvmCaip2 = wanted.includes(":")
+        ? wanted
+        : Object.entries(SVM_CAIP2).find(([, friendly]) => friendly === wanted)?.[0];
+      const v2 = v2accepts.find((a) => a.network === wantedCaip2 || a.network === wantedSvmCaip2);
       if (v2) return fromV2(v2);
       const offered = [
         ...challenge.accepts.map((a) => a.network),
@@ -564,7 +616,66 @@ export class PixelWarClient {
     return this.mock;
   }
 
+  /** Lazily derive the Solana keypair from solanaPrivateKey (base58). */
+  private async solanaKeypair() {
+    if (!this.solanaSecret) {
+      throw new Error("no solanaPrivateKey configured — required to pay on Solana (or use mock mode)");
+    }
+    const { Keypair } = await import("@solana/web3.js");
+    const bs58 = (await import("bs58")).default;
+    return Keypair.fromSecretKey(bs58.decode(this.solanaSecret));
+  }
+
+  /** The address we'd pay as on `req`'s VM (for replay lookup / mock payer). */
+  private async payerFor(req: SelectedPayment): Promise<string | null> {
+    if (req.vm === "svm") {
+      if (this.solanaSecret) return (await this.solanaKeypair()).publicKey.toBase58();
+      return this.mock ? MOCK_SVM_PAYER : null;
+    }
+    return this.account?.address ?? (this.mock ? MOCK_FALLBACK_PAYER : null);
+  }
+
+  /**
+   * Build + partially-sign a Solana `exact` payment transaction per the x402
+   * SVM scheme: [CU limit, CU price, SPL TransferChecked (payer ATA → payTo
+   * ATA), Memo=extra.memo]. Fee-payer is the facilitator (extra.feePayer); it
+   * co-signs at settle. We sign only as the transfer authority.
+   */
+  private async signSvmPayment(req: SelectedPayment): Promise<string> {
+    const web3 = await import("@solana/web3.js");
+    const spl = await import("@solana/spl-token");
+    const payer = await this.solanaKeypair();
+    const feePayer = new web3.PublicKey(req.extra.feePayer!);
+    const mint = new web3.PublicKey(req.asset);
+    const payTo = new web3.PublicKey(req.payTo);
+    const payerAta = await spl.getAssociatedTokenAddress(mint, payer.publicKey);
+    const payToAta = await spl.getAssociatedTokenAddress(mint, payTo);
+    const rpc = this.rpcUrl ?? SVM_RPC[req.network] ?? "https://api.devnet.solana.com";
+    const connection = new web3.Connection(rpc, "confirmed");
+    const { blockhash } = await connection.getLatestBlockhash("confirmed");
+    const ixs = [
+      web3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+      web3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+      spl.createTransferCheckedInstruction(payerAta, mint, payToAta, payer.publicKey, BigInt(req.amount), 6),
+      new web3.TransactionInstruction({
+        keys: [],
+        programId: new web3.PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
+        data: Buffer.from(req.extra.memo!, "utf8"),
+      }),
+    ];
+    const msg = new web3.TransactionMessage({
+      payerKey: feePayer,
+      recentBlockhash: blockhash,
+      instructions: ixs,
+    }).compileToV0Message();
+    const tx = new web3.VersionedTransaction(msg);
+    tx.sign([payer]); // partial: only the transfer authority; facilitator co-signs at settle
+    const transaction = Buffer.from(tx.serialize()).toString("base64");
+    return this.encodeSvmHeader(transaction, req);
+  }
+
   private async signPayment(req: SelectedPayment): Promise<string> {
+    if (req.vm === "svm") return this.signSvmPayment(req);
     if (!this.account) {
       throw new Error(
         "no privateKey configured — required for real x402 payments (or use mock mode)",
@@ -613,7 +724,19 @@ export class PixelWarClient {
     }, req);
   }
 
-  private buildMockPayment(req: SelectedPayment): string {
+  private async buildMockPayment(req: SelectedPayment): Promise<string> {
+    if (req.vm === "svm") {
+      // Mock SVM: a decodable stub {mock,payer,amount,memo} the mock provider
+      // reads (no real chain). Payer = the solana pubkey if configured, else a
+      // fixed mock pubkey.
+      const payer = this.solanaSecret
+        ? (await this.solanaKeypair()).publicKey.toBase58()
+        : MOCK_SVM_PAYER;
+      const transaction = Buffer.from(
+        JSON.stringify({ mock: true, payer, amount: req.amount, memo: req.extra.memo }),
+      ).toString("base64");
+      return this.encodeSvmHeader(transaction, req);
+    }
     const from = this.account?.address ?? MOCK_FALLBACK_PAYER;
     const now = Math.floor(Date.now() / 1000);
     const nonce = `0x${Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex")}`;
@@ -625,6 +748,18 @@ export class PixelWarClient {
       validBefore: String(now + 120),
       nonce,
     }, req);
+  }
+
+  /** v2 SVM envelope: payload is {transaction}, accepted echoed verbatim. */
+  private encodeSvmHeader(transaction: string, req: SelectedPayment): string {
+    return Buffer.from(
+      JSON.stringify({
+        x402Version: 2,
+        ...(req.v2?.resource ? { resource: req.v2.resource } : {}),
+        accepted: req.v2?.accepted,
+        payload: { transaction },
+      }),
+    ).toString("base64");
   }
 
   private encodeHeader(
