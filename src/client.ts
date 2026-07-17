@@ -411,10 +411,27 @@ export class PixelWarClient {
       extra: a.extra,
     });
     const fromV2 = (a: NonNullable<PaymentRequired["v2"]>["accepts"][number]): SelectedPayment => {
+      if (!a || typeof a.network !== "string" || typeof a.amount !== "string" ||
+          typeof a.asset !== "string" || typeof a.payTo !== "string") {
+        throw new Error("malformed v2 payment entry (missing network/amount/asset/payTo) — refusing to sign");
+      }
       const m = /^eip155:(\d+)$/.exec(a.network);
       if (!m) throw new Error(`network "${a.network}" is not an EVM chain — this SDK version cannot pay on it`);
       const chainId = Number(m[1]);
+      if (!Number.isSafeInteger(chainId) || chainId <= 0) {
+        throw new Error(`network "${a.network}" has an out-of-range chain id — refusing to sign`);
+      }
       const friendly = Object.entries(CHAIN_IDS).find(([, id]) => id === chainId)?.[0];
+      // Allowlist gate (parity with v1): only sign chains this SDK build
+      // recognizes. Without this, a malicious/misconfigured/MITM server could
+      // name an unlisted chain (e.g. eip155:1 with real mainnet USDC + an
+      // attacker payTo) and we'd sign a real authorization on it — with the
+      // balance pre-check silently skipped (no DEFAULT_RPC entry).
+      if (!friendly) {
+        throw new Error(
+          `network "${a.network}" is not in this SDK's known chains — refusing to sign. Upgrade the SDK if this chain is legitimately supported.`,
+        );
+      }
       const extra = (a.extra ?? {}) as { name?: string; version?: string; requestHash?: string };
       if (typeof extra.name !== "string" || typeof extra.version !== "string") {
         throw new Error(`v2 entry for ${a.network} lacks the EIP-712 domain in extra — refusing to sign`);
@@ -422,7 +439,7 @@ export class PixelWarClient {
       return {
         version: 2,
         headerName: "payment-signature",
-        network: friendly ?? a.network,
+        network: friendly,
         chainId,
         amount: a.amount,
         asset: a.asset,
@@ -433,15 +450,22 @@ export class PixelWarClient {
       };
     };
 
-    const v2accepts = challenge.v2?.accepts ?? [];
+    const v2accepts = Array.isArray(challenge.v2?.accepts) ? challenge.v2!.accepts : [];
     if (wanted) {
-      const v1 = challenge.accepts.find((a) => a.network === wanted);
-      if (v1) return fromV1(v1);
+      // Normalize `wanted` to BOTH a friendly id and a CAIP-2 id so a
+      // CAIP-2 --network still prefers the v1 (battle-tested) entry when the
+      // chain is offered in both generations.
       const wantedCaip2 = wanted.includes(":")
         ? wanted
         : CHAIN_IDS[wanted] !== undefined
           ? `eip155:${CHAIN_IDS[wanted]}`
           : null;
+      const caipMatch = /^eip155:(\d+)$/.exec(wantedCaip2 ?? "");
+      const wantedFriendly = wanted.includes(":")
+        ? (caipMatch ? Object.entries(CHAIN_IDS).find(([, id]) => id === Number(caipMatch[1]))?.[0] : undefined)
+        : wanted;
+      const v1 = challenge.accepts.find((a) => a.network === wantedFriendly);
+      if (v1) return fromV1(v1);
       const v2 = wantedCaip2 ? v2accepts.find((a) => a.network === wantedCaip2) : undefined;
       if (v2) return fromV2(v2);
       const offered = [
