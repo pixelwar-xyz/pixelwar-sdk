@@ -626,15 +626,6 @@ export class PixelWarClient {
     return Keypair.fromSecretKey(bs58.decode(this.solanaSecret));
   }
 
-  /** The address we'd pay as on `req`'s VM (for replay lookup / mock payer). */
-  private async payerFor(req: SelectedPayment): Promise<string | null> {
-    if (req.vm === "svm") {
-      if (this.solanaSecret) return (await this.solanaKeypair()).publicKey.toBase58();
-      return this.mock ? MOCK_SVM_PAYER : null;
-    }
-    return this.account?.address ?? (this.mock ? MOCK_FALLBACK_PAYER : null);
-  }
-
   /**
    * Build + partially-sign a Solana `exact` payment transaction per the x402
    * SVM scheme: [CU limit, CU price, SPL TransferChecked (payer ATA → payTo
