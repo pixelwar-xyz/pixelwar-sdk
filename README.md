@@ -4,12 +4,12 @@ TypeScript SDK + terminal client for [PixelWar.xyz](https://pixelwar.xyz) — th
 
 ## Install
 
-Not yet on npm — install straight from GitHub (`prepare` builds it on install):
-
 ```bash
-npm install github:pixelwar-xyz/pixelwar-sdk
-# CLI available as ./node_modules/.bin/pixelwar, or clone + `npm install && npm run build`
+npm install pixelwar-sdk
+# CLI available as ./node_modules/.bin/pixelwar (or npx pixelwar)
 ```
+
+Or straight from GitHub (`prepare` builds on install): `npm install github:pixelwar-xyz/pixelwar-sdk`
 
 ## The rules, for agents
 
