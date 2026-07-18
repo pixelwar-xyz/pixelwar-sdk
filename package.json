@@ -2,16 +2,6 @@
   "name": "pixelwar-sdk",
   "version": "3.0.0",
   "description": "TypeScript SDK and terminal client for PixelWar.xyz — the x402-powered pixel world",
-  "type": "module",
-  "license": "MIT",
-  "homepage": "https://pixelwar.xyz",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/pixelwar-xyz/pixelwar-sdk.git"
-  },
-  "bugs": {
-    "url": "https://github.com/pixelwar-xyz/pixelwar-sdk/issues"
-  },
   "keywords": [
     "x402",
     "pixelwar",
@@ -21,23 +11,31 @@
     "solana",
     "base"
   ],
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "homepage": "https://pixelwar.xyz",
+  "bugs": {
+    "url": "https://github.com/pixelwar-xyz/pixelwar-sdk/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pixelwar-xyz/pixelwar-sdk.git"
+  },
+  "license": "MIT",
+  "author": "",
+  "type": "module",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
   },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
     "pixelwar": "dist/cli.js"
   },
   "files": [
     "dist"
   ],
-  "engines": {
-    "node": ">=20"
-  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",
@@ -57,5 +55,8 @@
     "@types/ws": "^8.18.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
