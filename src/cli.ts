@@ -16,16 +16,24 @@ import type { HistoryOptions } from "./types.js";
 const args = process.argv.slice(2);
 const cmd = args[0];
 
-const client = new PixelWarClient({
-  baseUrl: process.env.PIXELWAR_API_URL ?? "https://api.pixelwar.xyz",
-  ...(process.env.PIXELWAR_PRIVATE_KEY
-    ? { privateKey: process.env.PIXELWAR_PRIVATE_KEY as `0x${string}` }
-    : {}),
-  ...(process.env.PIXELWAR_SOLANA_PRIVATE_KEY
-    ? { solanaPrivateKey: process.env.PIXELWAR_SOLANA_PRIVATE_KEY }
-    : {}),
-  ...(process.env.PIXELWAR_RPC_URL ? { rpcUrl: process.env.PIXELWAR_RPC_URL } : {}),
-});
+let client: PixelWarClient;
+try {
+  client = new PixelWarClient({
+    baseUrl: process.env.PIXELWAR_API_URL ?? "https://api.pixelwar.xyz",
+    ...(process.env.PIXELWAR_PRIVATE_KEY
+      ? { privateKey: process.env.PIXELWAR_PRIVATE_KEY as `0x${string}` }
+      : {}),
+    ...(process.env.PIXELWAR_SOLANA_PRIVATE_KEY
+      ? { solanaPrivateKey: process.env.PIXELWAR_SOLANA_PRIVATE_KEY }
+      : {}),
+    ...(process.env.PIXELWAR_RPC_URL ? { rpcUrl: process.env.PIXELWAR_RPC_URL } : {}),
+  });
+} catch {
+  // A malformed key would otherwise surface as an uncaught stack trace. The
+  // error value never contains key material, but keep it clean anyway.
+  console.error("invalid PIXELWAR_PRIVATE_KEY or PIXELWAR_SOLANA_PRIVATE_KEY — check the format");
+  process.exit(1);
+}
 
 const usage = `pixelwar — terminal client for pixelwar.xyz
 

@@ -31,17 +31,18 @@ import { PixelWarClient } from "pixelwar-sdk";
 
 const client = new PixelWarClient({
   baseUrl: "https://api.pixelwar.xyz",
-  privateKey: process.env.PIXELWAR_PRIVATE_KEY as `0x${string}`, // funded with USDC on Base
+  privateKey: process.env.PIXELWAR_PRIVATE_KEY as `0x${string}`, // EVM: Base / Arbitrum / Polygon
+  solanaPrivateKey: process.env.PIXELWAR_SOLANA_PRIVATE_KEY,     // optional: base58, to pay on Solana
 });
 
 // Free reads
-const meta = await client.meta();                 // includes meta.ruleset
+const meta = await client.meta();                 // includes meta.ruleset + meta.networks
 const pixel = await client.pixel(500, 500);       // price is the current (decayed) price
 const quote = await client.quote([{ x: 500, y: 500, color: "#ff0044" }]);
 
-// Paid paint — full x402 flow handled for you:
-// POST → 402 challenge → EIP-3009 signature → retry with X-PAYMENT
-const result = await client.paint([{ x: 500, y: 500, color: "#ff0044" }]);
+// Paid paint — full x402 flow handled for you (challenge → sign → settle).
+// Pick the chain with { network }; default is the server's primary chain.
+const result = await client.paint([{ x: 500, y: 500, color: "#ff0044" }], { network: "base" });
 console.log(result.totalPaidUsdc, result.refund);
 for (const p of result.pixels) {
   console.log(`(${p.x},${p.y}) spoils ${p.spoils} → ${p.previousOwner}, next price ${p.nextPrice}`);
@@ -64,7 +65,12 @@ const stop = await client.live({
 
 **Bound your spend:** `client.paint(pixels, { maxTotal: 1_000_000n })` refuses to sign any challenge above the ceiling (atomic USDC) — set it; a raced pixel re-quotes at 1.5×. Every paint uses an auto-generated `Idempotency-Key`, so network retries can never double-charge. If a pixel's price rises between quote and payment the server rejects with a fresh quote — pass `maxRepriceRetries: 2` to auto-retry at the new price (careful: contested prices grow 1.5× per flip). Decay between quote and payment can only make settlement cheaper; the difference comes back as an on-chain refund.
 
-New in 2.1.0:
+New in 2.2.0:
+
+- **Multi-chain + x402 v2.** Pay on any accepted chain (`--network` / `{ network }`) over x402 v1 or v2; the client picks the right protocol per chain and refuses to sign a chain it doesn't recognize.
+- **Solana.** Set `PIXELWAR_SOLANA_PRIVATE_KEY` (or `solanaPrivateKey`) to pay on Solana — the client builds and partial-signs the SPL transaction for you. See [Networks](#networks).
+
+Since 2.1.0:
 
 - **Clean settlement failures auto-retry.** A 402 `settlement_failed` is the server's guarantee that no funds moved and the batch is unlocked; the client re-signs and retries it (twice by default — tune with `maxSettleRetries`). `do_not_repay` outcomes are *never* retried.
 - **Balance pre-check.** Before signing, the client soft-checks your USDC balance against the challenge amount over a public RPC (`rpcUrl` to override) and raises `InsufficientBalanceError` locally instead of failing at settlement. Any RPC problem skips the check.
@@ -83,12 +89,14 @@ New in 2.1.0:
 
 ```bash
 export PIXELWAR_API_URL=https://api.pixelwar.xyz
-export PIXELWAR_PRIVATE_KEY=0x...   # payments (not needed for reads in mock mode)
+export PIXELWAR_PRIVATE_KEY=0x...          # EVM wallet (Base/Arbitrum/Polygon) — not needed for reads
+export PIXELWAR_SOLANA_PRIVATE_KEY=...     # OR a Solana wallet (base58) to pay on Solana
 
-pixelwar meta
+pixelwar meta                                    # dimensions, ruleset, accepted networks
 pixelwar pixel 500 500
 pixelwar quote 500,500,#ff0044
 pixelwar paint 500,500,#ff0044 501,500,#ff0044   # prints spoils recipients + refunds
+pixelwar paint 500,500,#ff0044 --network solana  # pick the chain (default: server primary)
 pixelwar draw logo.png --at 784,570 --dry-run    # price a whole image first (free)
 pixelwar draw logo.png --at 784,570              # then paint it, batched + journaled
 pixelwar paint --file specs.txt --batch 250      # same machinery for x,y,#rrggbb files
@@ -110,3 +118,13 @@ and write a journal after every batch: if the process dies, **re-run the same
 command** — finished batches are skipped, and a batch that reached the server
 before the crash is recovered through its `Idempotency-Key` instead of being
 paid twice. `--dry-run` quotes everything without paying.
+
+## Networks
+
+One shared canvas, payable from any accepted chain — the same USDC price on
+each. `pixelwar meta` lists the live set (`meta.networks`); `--network <id>`
+(CLI) or `paint(pixels, { network })` (SDK) picks one, else the server's
+primary is used. EVM chains use `PIXELWAR_PRIVATE_KEY`; Solana uses
+`PIXELWAR_SOLANA_PRIVATE_KEY`. Spoils are paid to each owner on their own
+chain; the client refuses to sign a chain it doesn't recognize, and a batched
+job (`draw`/`--file`) is pinned to one chain so a resume never switches.

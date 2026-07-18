@@ -63,9 +63,11 @@ interface SelectedPayment {
 
 /** CAIP-2 ids of Solana networks this SDK build knows, → friendly id. */
 const SVM_CAIP2: Record<string, string> = {
+  "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "solana", // mainnet
   "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": "solana-devnet",
 };
 const SVM_RPC: Record<string, string> = {
+  solana: "https://api.mainnet-beta.solana.com",
   "solana-devnet": "https://api.devnet.solana.com",
 };
 
@@ -396,7 +398,12 @@ export class PixelWarClient {
    * "never landed" that invites a double-pay.
    */
   async paintReplay(idempotencyKey: string): Promise<PaintResult | null> {
-    const payer = this.account?.address ?? ((await this.isMock()) ? MOCK_FALLBACK_PAYER : null);
+    // Recover under whichever wallet paid — EVM address, else the Solana pubkey
+    // (a Solana-only client must still be able to recover a lost result).
+    const payer =
+      this.account?.address ??
+      (this.solanaSecret ? (await this.solanaKeypair()).publicKey.toBase58() : null) ??
+      ((await this.isMock()) ? MOCK_FALLBACK_PAYER : null);
     if (!payer) {
       throw new Error(
         "cannot look up a replay without a wallet: results are keyed by (key, payer) — configure the SAME privateKey that made the payment",

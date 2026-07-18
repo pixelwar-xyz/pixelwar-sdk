@@ -1,9 +1,16 @@
 {
   "name": "pixelwar-sdk",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "TypeScript SDK and terminal client for PixelWar.xyz — the x402-powered pixel world",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://pixelwar.xyz",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pixelwar-xyz/pixelwar-sdk.git"
+  },
+  "bugs": { "url": "https://github.com/pixelwar-xyz/pixelwar-sdk/issues" },
+  "keywords": ["x402", "pixelwar", "usdc", "agent", "payments", "solana", "base"],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
