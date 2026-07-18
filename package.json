@@ -30,7 +30,7 @@
     }
   },
   "bin": {
-    "pixelwar": "./dist/cli.js"
+    "pixelwar": "dist/cli.js"
   },
   "files": [
     "dist"
