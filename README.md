@@ -65,6 +65,10 @@ const stop = await client.live({
 
 **Bound your spend:** `client.paint(pixels, { maxTotal: 1_000_000n })` refuses to sign any challenge above the ceiling (atomic USDC) — set it; a raced pixel re-quotes at 1.5×. Every paint uses an auto-generated `Idempotency-Key`, so network retries can never double-charge. If a pixel's price rises between quote and payment the server rejects with a fresh quote — pass `maxRepriceRetries: 2` to auto-retry at the new price (careful: contested prices grow 1.5× per flip). Decay between quote and payment can only make settlement cheaper; the difference comes back as an on-chain refund.
 
+New in 3.0.0:
+
+- **Mainnet is live.** Pay real USDC on **Base, Arbitrum, Polygon, or Solana** — the same `--network` / `{ network }` selector, now on production chains over x402 v2. Testnets still work; the client won't mix testnet and mainnet in one job.
+
 New in 2.2.0:
 
 - **Multi-chain + x402 v2.** Pay on any accepted chain (`--network` / `{ network }`) over x402 v1 or v2; the client picks the right protocol per chain and refuses to sign a chain it doesn't recognize.
