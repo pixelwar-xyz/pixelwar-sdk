@@ -10,10 +10,18 @@ export interface Ruleset {
   version: string;
   announcedAt: string;
   effectiveFrom: string;
-  /** Price multiplier per overpaint, e.g. "1.5". */
+  /** Price multiplier per overpaint (conquest), e.g. "2". */
   growth: string;
-  /** Percent of every overpaint payment sent on-chain to the dispossessed owner, e.g. "80". */
+  /**
+   * Percent of every overpaint payment sent on-chain to the dispossessed owner.
+   * INERT in ruleset 1.4.0: conquest payouts are disabled (the platform keeps
+   * 100%). Gated by `conquestPayoutEnabled` — a future ruleset may re-enable it.
+   */
   ownerSharePct: string;
+  /** Whether conquest spoils are paid out. Currently false — platform keeps 100%. */
+  conquestPayoutEnabled?: boolean;
+  /** Whether quote/settle over-payment refunds are issued. Currently false. */
+  refundsEnabled?: boolean;
   /** Idle days before a pixel's price starts decaying. */
   decayGraceDays: number;
   /** Days per halving once decay has started. */
@@ -109,7 +117,10 @@ export interface PaintedPixel {
   /** Actually charged (decayed) price, atomic USDC. */
   pricePaid: string;
   previousOwner: string | null;
-  /** 80% of pricePaid, paid on-chain to previousOwner (conquest spoils); "0" for virgin pixels. */
+  /**
+   * Conquest spoils paid on-chain to previousOwner. INERT in ruleset 1.4.0
+   * (conquestPayoutEnabled=false → platform keeps 100%): always "0" today.
+   */
   spoils: string;
   /** Undecayed price of the NEXT overpaint. */
   nextPrice: string;

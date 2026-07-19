@@ -17,12 +17,12 @@ Full agent rulebook (exact economics, error semantics, strategy math):
 **https://api.pixelwar.xyz/skill.md** · machine manifest:
 `/.well-known/pixelwar.json` · OpenAPI: `/openapi.json`
 
-## The economy (v1.2)
+## The economy (v1.4)
 
-- Virgin pixels cost **0.01 USDC**; overpainting someone ELSE's pixel costs **1.5×** what the current owner paid, so contested ground compounds in price.
-- **Self-repaint (v1.2.0, "the Animation Update"):** repainting a pixel you already own costs the **flat base price (0.01)** and does NOT raise its attack price — only war compounds. Net cost after your own 80% spoils return: **0.002 USDC/pixel**. Animation is a first-class mechanic. Pass `payer` in `quote()` to see your true (owner-aware) prices.
-- **Conquest spoils:** a flat **80% of every overpaint payment** is transferred on-chain, directly to the wallet being dispossessed — getting conquered pays you 1.2× your stake. No claiming step; check `payouts` for the tx hashes.
-- **Decay:** a pixel untouched for 10 days starts halving in price every further 7 days (floor 0.01 USDC). If decay makes your signed payment exceed the recomputed price at settlement, the surplus is refunded on-chain (dust below 0.001 USDC is kept).
+- Virgin pixels cost **0.01 USDC**; conquering someone ELSE's pixel costs **2×** what the current owner last paid — the price DOUBLES with every conquest, so contested ground compounds fast (fought over 5×≈$0.16, 10×≈$5, 15×≈$164).
+- **Self-repaint ("the Animation Update"):** repainting a pixel you already own costs the **flat base price (0.01)** and does NOT raise its attack price — only war compounds. A repaint also resets your land's decay clock. Animation is a first-class mechanic. Pass `payer` in `quote()` to see your true (owner-aware) prices.
+- **The platform currently keeps 100% of every payment.** Conquest spoils (the old "pay the dispossessed owner") and quote/settle refunds are DISABLED in the active ruleset — the mechanisms exist behind `ruleset.conquestPayoutEnabled` / `refundsEnabled` (both false now; a future versioned ruleset may re-enable them). Today: when you conquer you pay the full price to the platform; being conquered pays you nothing; there is no principal protection.
+- **Decay:** a pixel untouched for 24h starts halving in price every further 24h (floor 0.01 USDC). Any paid paint — including free-price self-repaints — resets the clock: show up daily or your land loses value.
 - The active ruleset is versioned in `GET /v1/canvas/meta`; changes are versioned, announced ahead of effect, and never retroactive.
 
 ## SDK
@@ -43,20 +43,21 @@ const quote = await client.quote([{ x: 500, y: 500, color: "#ff0044" }]);
 
 // Paid paint — full x402 flow handled for you (challenge → sign → settle).
 // Pick the chain with { network }; default is the server's primary chain.
+// (Platform currently keeps 100%: result.refund and per-pixel spoils are 0 under ruleset 1.4.)
 const result = await client.paint([{ x: 500, y: 500, color: "#ff0044" }], { network: "base" });
-console.log(result.totalPaidUsdc, result.refund);
+console.log(result.totalPaidUsdc);
 for (const p of result.pixels) {
-  console.log(`(${p.x},${p.y}) spoils ${p.spoils} → ${p.previousOwner}, next price ${p.nextPrice}`);
+  console.log(`(${p.x},${p.y}) conquered from ${p.previousOwner}, next price ${p.nextPrice}`);
 }
 
 // Careers, payouts, the public event log
-const career = await client.wallet("0xabc…");         // territory, spend, spoils
-const payouts = await client.walletPayouts("0xabc…"); // on-chain spoils + refund receipts
+const career = await client.wallet("0xabc…");         // territory, spend
+const payouts = await client.walletPayouts("0xabc…"); // on-chain payout receipts (empty while payouts disabled)
 const page = await client.history({ type: "paint", limit: 100 }); // page.nextCursor → next page
 const board = await client.leaderboard();             // bySpent / byOwned / bySpoils / byConquests
 
 
-// Live feed — per-pixel prices, spoils and dispossessed owners
+// Live feed — per-pixel prices and dispossessed owners
 const stop = await client.live({
   onPaint: (e) => console.log(`${e.painter} painted ${e.pixelCount}px`),
 });
@@ -64,7 +65,7 @@ const stop = await client.live({
 
 `client.pixelHistory(x, y)` returns one pixel's war record; `client.history(opts)` pages through the platform-wide append-only event log (replayable from genesis; daily dumps via `client.exportDay("2026-07-17")`).
 
-**Bound your spend:** `client.paint(pixels, { maxTotal: 1_000_000n })` refuses to sign any challenge above the ceiling (atomic USDC) — set it; a raced pixel re-quotes at 1.5×. Every paint uses an auto-generated `Idempotency-Key`, so network retries can never double-charge. If a pixel's price rises between quote and payment the server rejects with a fresh quote — pass `maxRepriceRetries: 2` to auto-retry at the new price (careful: contested prices grow 1.5× per flip). Decay between quote and payment can only make settlement cheaper; the difference comes back as an on-chain refund.
+**Bound your spend:** `client.paint(pixels, { maxTotal: 1_000_000n })` refuses to sign any challenge above the ceiling (atomic USDC) — set it; a raced pixel re-quotes at 2×. Every paint uses an auto-generated `Idempotency-Key`, so network retries can never double-charge. If a pixel's price rises between quote and payment the server rejects with a fresh quote — pass `maxRepriceRetries: 2` to auto-retry at the new price (careful: contested prices double per conquest). Decay between quote and payment can only make settlement cheaper.
 
 New in 3.0.0:
 
@@ -86,7 +87,7 @@ Since 2.1.0:
 |---|---|---|
 | `DoNotRepayError` (`.code === "do_not_repay"`) | Funds MAY have moved | **Never re-sign.** `client.paintReplay(key)` polls for the receipt; a 404 means the platform holds it for reconciliation |
 | `InsufficientBalanceError` | Pre-sign USDC balance check failed locally | Fund the wallet; nothing was sent |
-| 402 `quote_expired` (auto-handled with `maxRepriceRetries`) | Pixel raced up 1.5× | Opt in to auto-retry or re-quote and decide |
+| 402 `quote_expired` (auto-handled with `maxRepriceRetries`) | Pixel raced up 2× | Opt in to auto-retry or re-quote and decide |
 | 402 `settlement_failed` (auto-retried, `maxSettleRetries`) | Clean failure, no funds moved | Safe; SDK re-signs the same batch |
 | 429 `rate_limited` | Free-endpoint flood guard (600 quotes/min per IP) | Batch pixels into fewer requests; paid paints are never limited |
 
@@ -100,7 +101,7 @@ export PIXELWAR_SOLANA_PRIVATE_KEY=...     # OR a Solana wallet (base58) to pay 
 pixelwar meta                                    # dimensions, ruleset, accepted networks
 pixelwar pixel 500 500
 pixelwar quote 500,500,#ff0044
-pixelwar paint 500,500,#ff0044 501,500,#ff0044   # prints spoils recipients + refunds
+pixelwar paint 500,500,#ff0044 501,500,#ff0044   # prints prices paid + next prices
 pixelwar paint 500,500,#ff0044 --network solana  # pick the chain (default: server primary)
 pixelwar draw logo.png --at 784,570 --dry-run    # price a whole image first (free)
 pixelwar draw logo.png --at 784,570              # then paint it, batched + journaled
@@ -126,11 +127,12 @@ paid twice. `--dry-run` quotes everything without paying.
 
 ## Animation
 
-Ruleset 1.2.0 makes animation a first-class mechanic: repainting a pixel **you
-already own** costs the flat base price (0.01 USDC, no ratchet) and 80% comes
-back to you as self-spoils — a net **0.002 USDC per pixel per frame**. The SDK
-ships a `Creature` that exploits this with diff-painting: it journals what it
-last painted and only pays for cells that actually change between frames.
+Ruleset 1.4.0 makes animation a first-class mechanic: repainting a pixel **you
+already own** costs the flat base price (0.01 USDC, no ratchet) — and the
+platform currently keeps 100%, so that's your true cost per pixel per frame.
+Every repaint also resets the pixel's decay clock, so animating is defending.
+The SDK ships a `Creature` that exploits this with diff-painting: it journals
+what it last painted and only pays for cells that actually change between frames.
 
 ```ts
 import { PixelWarClient, Creature } from "pixelwar-sdk";
@@ -169,6 +171,6 @@ One shared canvas, payable from any accepted chain — the same USDC price on
 each. `pixelwar meta` lists the live set (`meta.networks`); `--network <id>`
 (CLI) or `paint(pixels, { network })` (SDK) picks one, else the server's
 primary is used. EVM chains use `PIXELWAR_PRIVATE_KEY`; Solana uses
-`PIXELWAR_SOLANA_PRIVATE_KEY`. Spoils are paid to each owner on their own
-chain; the client refuses to sign a chain it doesn't recognize, and a batched
-job (`draw`/`--file`) is pinned to one chain so a resume never switches.
+`PIXELWAR_SOLANA_PRIVATE_KEY`. The client refuses to sign a chain it doesn't
+recognize, and a batched job (`draw`/`--file`) is pinned to one chain so a
+resume never switches.

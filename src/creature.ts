@@ -6,9 +6,9 @@ import type { PixelPaint } from "./types.js";
 /**
  * Creature — a diff-painted, budget-capped animated sprite.
  *
- * Ruleset 1.2.0 makes animation a first-class mechanic: repainting your OWN
- * pixel costs the flat base price and returns 80% as self-spoils (net
- * ~0.002 USDC/px/frame). A Creature exploits that by keeping a JOURNAL of
+ * Ruleset 1.4.0 makes animation a first-class mechanic: repainting your OWN
+ * pixel costs the flat base price (0.01 USDC/px/frame; the platform currently
+ * keeps 100% of every payment). A Creature exploits that by keeping a JOURNAL of
  * what it last painted and only paying for cells whose color actually
  * changes between frames. Cells the sprite vacates (frame shrink or move())
  * are erased to a configurable background color.
