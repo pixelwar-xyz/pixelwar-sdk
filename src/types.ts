@@ -5,7 +5,7 @@ export interface PixelPaint {
   color: string;
 }
 
-/** Versioned economy ruleset (changes announced ≥14 days ahead, never retroactive). */
+/** Versioned economy ruleset (changes versioned + announced ahead of effect, never retroactive). */
 export interface Ruleset {
   version: string;
   announcedAt: string;

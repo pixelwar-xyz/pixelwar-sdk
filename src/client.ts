@@ -242,8 +242,14 @@ export class PixelWarClient {
     return new Uint8Array(await res.arrayBuffer());
   }
 
-  quote(pixels: PixelPaint[]): Promise<Quote> {
-    return this.post("/v1/quote", { pixels });
+  /**
+   * Free price quote. Pass `opts.payer` (or rely on the configured wallet's
+   * address via `opts.payer === "self"` in your own code) to get owner-aware
+   * pricing: pixels that wallet already owns are quoted at the flat base
+   * price (self-repaint, ruleset ≥ 1.2.0). Anonymous quotes show attack prices.
+   */
+  quote(pixels: PixelPaint[], opts?: { payer?: string }): Promise<Quote> {
+    return this.post("/v1/quote", opts?.payer ? { pixels, payer: opts.payer } : { pixels });
   }
 
   // --- the paid action ---------------------------------------------------------
