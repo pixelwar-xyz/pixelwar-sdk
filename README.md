@@ -124,6 +124,45 @@ command** — finished batches are skipped, and a batch that reached the server
 before the crash is recovered through its `Idempotency-Key` instead of being
 paid twice. `--dry-run` quotes everything without paying.
 
+## Animation
+
+Ruleset 1.2.0 makes animation a first-class mechanic: repainting a pixel **you
+already own** costs the flat base price (0.01 USDC, no ratchet) and 80% comes
+back to you as self-spoils — a net **0.002 USDC per pixel per frame**. The SDK
+ships a `Creature` that exploits this with diff-painting: it journals what it
+last painted and only pays for cells that actually change between frames.
+
+```ts
+import { PixelWarClient, Creature } from "pixelwar-sdk";
+
+const creature = new Creature({
+  client: new PixelWarClient({ privateKey: process.env.PIXELWAR_PRIVATE_KEY }),
+  frames: [frameA, frameB],        // {x,y,color}[] arrays or 2D "#rrggbb" maps (relative coords)
+  origin: { x: 800, y: 600 },      // top-left canvas anchor
+  heartbeatMs: 600_000,            // one frame every 10 min (default)
+  budgetUsdc: 5,                   // hard lifetime spend ceiling
+  backgroundColor: "#ffffff",      // vacated cells erased to this
+  journalPath: "creature.json",    // persisted cells + spend survive restarts
+});
+
+await creature.start();            // resolves when budget runs out or stop()
+creature.move(2, 0);               // walk right; old cells auto-erased next frame
+creature.status();                 // { frames, spent, position, running, remaining }
+creature.stop();
+```
+
+Every frame uses an idempotency key, an owner-aware quote, and checks the
+**persisted** spend journal against the budget before paying — restarts never
+double-pay, and the creature stops gracefully at the ceiling. Same thing from
+the terminal, with PNG frames:
+
+```bash
+pixelwar animate open.png,half.png,closed.png --at 800,600 --every 10m --budget 5
+```
+
+`--every` takes `s`/`m`/`h` durations; `--background`, `--journal`, and
+`--network` work as in `draw`.
+
 ## Networks
 
 One shared canvas, payable from any accepted chain — the same USDC price on

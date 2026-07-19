@@ -9,6 +9,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { PixelWarClient } from "./client.js";
+import { Creature } from "./creature.js";
 import { decodePng } from "./png.js";
 import { DoNotRepayError } from "./types.js";
 import type { HistoryOptions } from "./types.js";
@@ -50,6 +51,9 @@ usage:
                                          paint a whole spec file in journaled batches
   pixelwar draw <image.png> --at <x,y> [--batch N] [--journal J] [--dry-run] [--network <chain>]
                  [--skip-color #rrggbb]  paint a PNG (transparent pixels skipped)
+  pixelwar animate <a.png[,b.png,...]> --at <x,y> [--every 10m] [--budget 5]
+                 [--background #rrggbb] [--journal J] [--network <chain>]
+                                         cycle PNG frames as a diff-painted creature
   pixelwar replay <idempotency-key>      recover a paint result without re-paying
   pixelwar wallet <address>              public career: territory, spend, spoils
   pixelwar payouts <address>             on-chain payouts (conquest spoils + refunds)
@@ -562,6 +566,91 @@ try {
         dryRun: bools.has("dry-run"),
         ...(flags.network ? { network: flags.network } : {}),
       });
+      break;
+    }
+    case "animate": {
+      const { positionals, flags } = splitArgs(args.slice(1));
+      const filesArg = positionals[0];
+      if (!filesArg) {
+        console.error(
+          "usage: pixelwar animate <a.png[,b.png,...]> --at x,y [--every 10m] [--budget 5] [--background #rrggbb] [--journal J] [--network <chain>]",
+        );
+        process.exit(1);
+      }
+      if (!flags.at || !/^\d+,\d+$/.test(flags.at)) {
+        console.error(`--at is required as x,y (canvas coordinates of the creature's top-left corner)`);
+        process.exit(1);
+      }
+      const [atX, atY] = flags.at.split(",").map(Number) as [number, number];
+
+      // --every: duration with s/m/h suffix (default 10m).
+      const everyRaw = flags.every ?? "10m";
+      const everyMatch = /^(\d+(?:\.\d+)?)(s|m|h)$/.exec(everyRaw);
+      if (!everyMatch) {
+        console.error(`invalid --every: "${everyRaw}" (expected e.g. 30s, 10m, 1h)`);
+        process.exit(1);
+      }
+      const heartbeatMs =
+        Number(everyMatch[1]) * { s: 1_000, m: 60_000, h: 3_600_000 }[everyMatch[2] as "s" | "m" | "h"];
+
+      const budgetRaw = flags.budget ?? "5";
+      const budgetUsdc = Number(budgetRaw);
+      if (!Number.isFinite(budgetUsdc) || budgetUsdc <= 0) {
+        console.error(`invalid --budget: "${budgetRaw}" (expected USDC amount, e.g. 5)`);
+        process.exit(1);
+      }
+
+      // Decode each PNG into a sparse relative-pixel frame (transparent skipped).
+      const files = filesArg.split(",").map((f) => f.trim()).filter(Boolean);
+      const frames = files.map((file) => {
+        if (!existsSync(file)) {
+          console.error(`image not found: ${file}`);
+          process.exit(1);
+        }
+        const img = decodePng(readFileSync(file));
+        const frame: { x: number; y: number; color: string }[] = [];
+        for (let y = 0; y < img.height; y++) {
+          for (let x = 0; x < img.width; x++) {
+            const o = (y * img.width + x) * 4;
+            if (img.pixels[o + 3]! < 128) continue; // transparent → not part of the sprite
+            const color = `#${img.pixels[o]!.toString(16).padStart(2, "0")}${img.pixels[o + 1]!
+              .toString(16)
+              .padStart(2, "0")}${img.pixels[o + 2]!.toString(16).padStart(2, "0")}`;
+            frame.push({ x, y, color });
+          }
+        }
+        if (frame.length === 0) {
+          console.error(`${file}: no paintable pixels (all transparent)`);
+          process.exit(1);
+        }
+        console.error(`${file}: ${img.width}x${img.height}, ${frame.length} paintable pixels`);
+        return frame;
+      });
+
+      const creature = new Creature({
+        client,
+        frames,
+        origin: { x: atX, y: atY },
+        heartbeatMs,
+        budgetUsdc,
+        ...(flags.network ? { network: flags.network } : {}),
+        ...(flags.background ? { backgroundColor: flags.background } : {}),
+        journalPath: flags.journal ?? "creature-journal.json",
+      });
+
+      console.error(
+        `animating ${frames.length} frame(s) at (${atX},${atY}) every ${everyRaw}, ` +
+          `budget ${budgetUsdc} USDC (ctrl-c to stop; journal: ${flags.journal ?? "creature-journal.json"})`,
+      );
+      const shutdown = () => {
+        console.error("\nstopping creature…");
+        creature.stop();
+      };
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
+      await creature.start();
+      const s = creature.status();
+      console.error(`done: ${s.frames} frames painted, ${s.spent} USDC spent, at (${s.position.x},${s.position.y})`);
       break;
     }
     case "replay": {
